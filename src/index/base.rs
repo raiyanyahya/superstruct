@@ -1,6 +1,6 @@
 use crate::primary::Record;
 use crate::query::{Predicate, PredicateKind};
-use std::collections::HashSet;
+use roaring::RoaringTreemap;
 
 pub trait Index: Send + Sync {
     fn attribute(&self) -> &str;
@@ -13,7 +13,7 @@ pub trait Index: Send + Sync {
 
     fn remove(&mut self, record: &Record);
 
-    fn execute(&self, predicate: &Predicate) -> HashSet<u64>;
+    fn execute(&self, predicate: &Predicate) -> RoaringTreemap;
 
     fn memory_estimate_bytes(&self) -> usize;
 

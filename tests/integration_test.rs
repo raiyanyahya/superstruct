@@ -43,7 +43,7 @@ mod tests {
 
     #[test]
     fn test_get_returns_record_by_id() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut attrs = HashMap::new();
         attrs.insert("name".to_string(), Value::String("Alice".to_string()));
         let id = ss.insert(attrs);
@@ -52,13 +52,13 @@ mod tests {
 
     #[test]
     fn test_get_returns_none_for_unknown_id() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         assert!(ss.get(9999).is_none());
     }
 
     #[test]
     fn test_equals_query() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_five_records(&ss);
         let out = ss.find().equals("city", Value::String("NYC".to_string())).execute();
         assert_eq!(sorted_names(&out), vec!["Alice", "Andre"]);
@@ -66,7 +66,7 @@ mod tests {
 
     #[test]
     fn test_range_query_inclusive_bounds() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_five_records(&ss);
         let out = ss.find().range("age", Value::Int(25), Value::Int(30)).execute();
         assert_eq!(sorted_names(&out), vec!["Alice", "Anya", "Bea"]);
@@ -74,7 +74,7 @@ mod tests {
 
     #[test]
     fn test_prefix_query() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_five_records(&ss);
         let out = ss.find().prefix("name", "A").execute();
         assert_eq!(sorted_names(&out), vec!["Alice", "Andre", "Anya"]);
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn test_prefix_query_no_match() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_five_records(&ss);
         let out = ss.find().prefix("name", "Z").execute();
         assert!(out.is_empty());
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn test_compound_intersection() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_five_records(&ss);
         let out = ss.find()
             .range("age", Value::Int(25), Value::Int(50))
@@ -102,7 +102,7 @@ mod tests {
 
     #[test]
     fn test_compound_intersection_empty() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_five_records(&ss);
         let out = ss.find()
             .range("age", Value::Int(25), Value::Int(30))
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn test_top_k_descending() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_five_records(&ss);
         let out = ss.find().top_k("score", 2, true).execute();
         let scores: Vec<i64> = out.iter().map(|r| r["score"].as_i64().unwrap()).collect();
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn test_top_k_ascending() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for i in 0..5 {
             let mut attrs = HashMap::new();
             attrs.insert("score".to_string(), Value::Int(i));
@@ -136,7 +136,7 @@ mod tests {
 
     #[test]
     fn test_top_k_after_filter() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         insert_record(&ss, "Alice", 30, "NYC", 88);
         insert_record(&ss, "Bob", 25, "SF", 92);
         insert_record(&ss, "Carol", 30, "NYC", 70);
@@ -149,7 +149,7 @@ mod tests {
 
     #[test]
     fn test_no_indexes_built_until_first_query() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         insert_record(&ss, "Alice", 30, "NYC", 88);
         assert!(ss.index_inventory().is_empty());
         ss.find().equals("city", Value::String("NYC".to_string())).execute();
@@ -159,7 +159,7 @@ mod tests {
 
     #[test]
     fn test_insert_after_build_propagates_to_index() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         insert_record(&ss, "Alice", 30, "NYC", 88);
         ss.find().equals("city", Value::String("NYC".to_string())).execute();
         insert_record(&ss, "Zed", 99, "NYC", 1);
@@ -170,7 +170,7 @@ mod tests {
 
     #[test]
     fn test_delete_propagates_to_index() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let id = insert_record(&ss, "Alice", 30, "NYC", 88);
         ss.find().equals("city", Value::String("NYC".to_string())).execute();
         ss.delete(id);
@@ -181,7 +181,7 @@ mod tests {
 
     #[test]
     fn test_eviction_under_tight_budget() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         insert_record(&ss, "Alice", 30, "NYC", 88);
         ss.find().equals("city", Value::String("NYC".to_string())).execute();
         ss.find().range("age", Value::Int(20), Value::Int(40)).execute();
@@ -193,7 +193,7 @@ mod tests {
 
     #[test]
     fn test_correctness_survives_eviction() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         insert_record(&ss, "Alice", 30, "NYC", 88);
         let before = ss.find().equals("city", Value::String("NYC".to_string())).execute();
         let before_names = sorted_names(&before);
@@ -207,7 +207,7 @@ mod tests {
 
     #[test]
     fn test_or_group_unions() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_four_city_records(&ss);
         let out = ss.find()
             .any_of(vec![
@@ -220,7 +220,7 @@ mod tests {
 
     #[test]
     fn test_exclude_subtracts() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_four_city_records(&ss);
         let out = ss.find()
             .exclude(ss.find().equals("city", Value::String("NYC".to_string())).to_node().unwrap())
@@ -230,7 +230,7 @@ mod tests {
 
     #[test]
     fn test_combine_or_and_not() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         setup_four_city_records(&ss);
         let out = ss.find()
             .any_of(vec![
@@ -246,7 +246,7 @@ mod tests {
 
     #[test]
     fn test_query_on_empty_store_returns_empty() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         assert!(ss.find().equals("city", Value::String("NYC".to_string())).execute().is_empty());
         assert!(ss.find().range("age", Value::Int(0), Value::Int(100)).execute().is_empty());
         assert!(ss.find().prefix("name", "A").execute().is_empty());
@@ -254,14 +254,14 @@ mod tests {
 
     #[test]
     fn test_insert_empty_dict_yields_id() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let id = ss.insert(HashMap::new());
         assert_eq!(ss.get(id).unwrap(), HashMap::new());
     }
 
     #[test]
     fn test_query_on_attribute_no_record_has() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut attrs = HashMap::new();
         attrs.insert("a".to_string(), Value::Int(1));
         ss.insert(attrs);
@@ -270,7 +270,7 @@ mod tests {
 
     #[test]
     fn test_range_with_lo_greater_than_hi_returns_empty() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for i in 0..5 {
             let mut attrs = HashMap::new();
             attrs.insert("n".to_string(), Value::Int(i));
@@ -281,7 +281,7 @@ mod tests {
 
     #[test]
     fn test_range_with_lo_equal_hi_acts_as_point() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for i in 0..5 {
             let mut attrs = HashMap::new();
             attrs.insert("n".to_string(), Value::Int(i));
@@ -293,7 +293,7 @@ mod tests {
 
     #[test]
     fn test_prefix_with_empty_string_matches_all_strings() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut a = HashMap::new();
         a.insert("name".to_string(), Value::String("Alice".to_string()));
         ss.insert(a);
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn test_records_without_attribute_skip_silently() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut a = HashMap::new();
         a.insert("name".to_string(), Value::String("Alice".to_string()));
         ss.insert(a);
@@ -322,7 +322,7 @@ mod tests {
 
     #[test]
     fn test_delete_unknown_id_returns_false() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         assert!(!ss.delete(0));
         let mut attrs = HashMap::new();
         attrs.insert("x".to_string(), Value::Int(1));
@@ -332,7 +332,7 @@ mod tests {
 
     #[test]
     fn test_insert_returns_monotonic_ids() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let ids: Vec<u64> = (0..5)
             .map(|i| {
                 let mut attrs = HashMap::new();
@@ -345,7 +345,7 @@ mod tests {
 
     #[test]
     fn test_deleted_id_is_not_reused() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut a = HashMap::new();
         a.insert("x".to_string(), Value::Int(1));
         let a_id = ss.insert(a);
@@ -358,7 +358,7 @@ mod tests {
 
     #[test]
     fn test_query_matches_all_when_no_predicates() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for i in 0..3 {
             let mut attrs = HashMap::new();
             attrs.insert("n".to_string(), Value::Int(i));
@@ -370,7 +370,7 @@ mod tests {
 
     #[test]
     fn test_top_k_alone_returns_ordered_universe() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for &v in &[3, 1, 4, 1, 5, 9, 2, 6] {
             let mut attrs = HashMap::new();
             attrs.insert("v".to_string(), Value::Int(v));
@@ -383,7 +383,7 @@ mod tests {
 
     #[test]
     fn test_top_k_zero_returns_empty() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for i in 0..5 {
             let mut attrs = HashMap::new();
             attrs.insert("score".to_string(), Value::Int(i));
@@ -394,7 +394,7 @@ mod tests {
 
     #[test]
     fn test_top_k_larger_than_result_returns_all() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for i in 0..5 {
             let mut attrs = HashMap::new();
             attrs.insert("score".to_string(), Value::Int(i));
@@ -406,7 +406,7 @@ mod tests {
 
     #[test]
     fn test_top_k_skips_records_missing_attribute() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for i in 0..5 {
             let mut attrs = HashMap::new();
             attrs.insert("score".to_string(), Value::Int(i));
@@ -425,7 +425,7 @@ mod tests {
 
     #[test]
     fn test_contains_query() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut a = HashMap::new();
         a.insert("name".to_string(), Value::String("Alice".to_string()));
         a.insert("bio".to_string(), Value::String("loves cats".to_string()));
@@ -440,7 +440,7 @@ mod tests {
 
     #[test]
     fn test_contains_case_insensitive() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut attrs = HashMap::new();
         attrs.insert("bio".to_string(), Value::String("dog person all the way".to_string()));
         ss.insert(attrs);
@@ -450,7 +450,7 @@ mod tests {
 
     #[test]
     fn test_contains_two_words_anded() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut a = HashMap::new();
         a.insert("bio".to_string(), Value::String("loves cats and long walks".to_string()));
         ss.insert(a);
@@ -466,7 +466,7 @@ mod tests {
 
     #[test]
     fn test_contains_punctuation_ok() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut attrs = HashMap::new();
         attrs.insert("bio".to_string(), Value::String("hello, world! how are you?".to_string()));
         ss.insert(attrs);
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn test_fuzzy_finds_near_matches() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for name in &["Alice", "Alicia", "Alyce", "Bob", "Charlie"] {
             let mut attrs = HashMap::new();
             attrs.insert("name".to_string(), Value::String(name.to_string()));
@@ -489,7 +489,7 @@ mod tests {
 
     #[test]
     fn test_fuzzy_strict_rules_out_far() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for name in &["Alice", "Alicia", "Alyce", "Bob", "Charlie"] {
             let mut attrs = HashMap::new();
             attrs.insert("name".to_string(), Value::String(name.to_string()));
@@ -503,7 +503,7 @@ mod tests {
 
     #[test]
     fn test_fuzzy_threshold_one_exact() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for name in &["Alice", "Alicia", "Alyce", "Bob", "Charlie"] {
             let mut attrs = HashMap::new();
             attrs.insert("name".to_string(), Value::String(name.to_string()));
@@ -518,7 +518,7 @@ mod tests {
 
     #[test]
     fn test_graph_neighbors() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         let _c = insert_record(&ss, "C", 3, "Z", 3);
@@ -529,7 +529,7 @@ mod tests {
 
     #[test]
     fn test_bfs() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         let c = insert_record(&ss, "C", 3, "Z", 3);
@@ -543,7 +543,7 @@ mod tests {
 
     #[test]
     fn test_shortest_path() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         let c = insert_record(&ss, "C", 3, "Z", 3);
@@ -554,14 +554,14 @@ mod tests {
 
     #[test]
     fn test_shortest_path_same_node() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         assert_eq!(ss.shortest_path(a, a, None).unwrap(), vec![a]);
     }
 
     #[test]
     fn test_graph_delete_node_drops_edges() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         let c = insert_record(&ss, "C", 3, "Z", 3);
@@ -573,7 +573,7 @@ mod tests {
 
     #[test]
     fn test_graph_self_loop() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         ss.add_edge(a, a, None, false);
         assert!(ss.neighbors(a, None).contains(&a));
@@ -581,7 +581,7 @@ mod tests {
 
     #[test]
     fn test_graph_directed_edge_no_reverse() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         ss.add_edge(a, b, None, true);
@@ -591,7 +591,7 @@ mod tests {
 
     #[test]
     fn test_graph_labels_segregate() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         let c = insert_record(&ss, "C", 3, "Z", 3);
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn test_graph_remove_edge() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         ss.add_edge(a, b, None, false);
@@ -613,7 +613,7 @@ mod tests {
 
     #[test]
     fn test_graph_shortest_path_unreachable() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         assert!(ss.shortest_path(a, b, None).is_none());
@@ -621,7 +621,7 @@ mod tests {
 
     #[test]
     fn test_graph_bfs_chain() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let nodes: Vec<u64> = (0..10).map(|i| {
             let mut attrs = HashMap::new();
             attrs.insert("n".to_string(), Value::Int(i));
@@ -637,7 +637,7 @@ mod tests {
 
     #[test]
     fn test_graph_dense_traversal() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let nodes: Vec<u64> = (0..8).map(|i| {
             let mut attrs = HashMap::new();
             attrs.insert("i".to_string(), Value::Int(i));
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_facade_bloom_contains() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for _ in 0..50 {
             let mut attrs = HashMap::new();
             attrs.insert("city".to_string(), Value::String("NYC".to_string()));
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn test_facade_count_min_estimate() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for _ in 0..50 {
             let mut attrs = HashMap::new();
             attrs.insert("city".to_string(), Value::String("NYC".to_string()));
@@ -737,7 +737,7 @@ mod tests {
 
     #[test]
     fn test_save_load_round_trip() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "Alice", 30, "NYC", 88);
         let b = insert_record(&ss, "Bob", 25, "SF", 92);
         ss.add_edge(a, b, None, false);
@@ -745,7 +745,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("snapshot.json");
         ss.save(path.to_str().unwrap()).unwrap();
-        let loaded = Superstruct::load(path.to_str().unwrap(), None, false).unwrap();
+        let loaded = Superstruct::load(path.to_str().unwrap(), None).unwrap();
 
         assert_eq!(loaded.get(a).unwrap()["name"], Value::String("Alice".to_string()));
         assert_eq!(loaded.get(b).unwrap()["name"], Value::String("Bob".to_string()));
@@ -754,7 +754,7 @@ mod tests {
 
     #[test]
     fn test_load_then_query_triggers_rebuild() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for name in &["Alice", "Bob", "Carol"] {
             let mut attrs = HashMap::new();
             attrs.insert("name".to_string(), Value::String(name.to_string()));
@@ -763,7 +763,7 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("snapshot.json");
         ss.save(path.to_str().unwrap()).unwrap();
-        let loaded = Superstruct::load(path.to_str().unwrap(), None, false).unwrap();
+        let loaded = Superstruct::load(path.to_str().unwrap(), None).unwrap();
         assert!(loaded.index_inventory().is_empty());
         let out = loaded.find().prefix("name", "A").execute();
         assert_eq!(out[0]["name"], Value::String("Alice".to_string()));
@@ -773,23 +773,23 @@ mod tests {
 
     #[test]
     fn test_save_load_empty_store() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("empty.json");
         ss.save(path.to_str().unwrap()).unwrap();
-        let loaded = Superstruct::load(path.to_str().unwrap(), None, false).unwrap();
+        let loaded = Superstruct::load(path.to_str().unwrap(), None).unwrap();
         assert_eq!(loaded.len(), 0);
     }
 
     #[test]
     fn test_save_load_heterogeneous() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         ss.insert(HashMap::from([("a".to_string(), Value::Int(1))]));
         ss.insert(HashMap::from([("b".to_string(), Value::String("hello".to_string()))]));
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("het.json");
         ss.save(path.to_str().unwrap()).unwrap();
-        let loaded = Superstruct::load(path.to_str().unwrap(), None, false).unwrap();
+        let loaded = Superstruct::load(path.to_str().unwrap(), None).unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded.get(0).unwrap()["a"], Value::Int(1));
         assert_eq!(loaded.get(1).unwrap()["b"], Value::String("hello".to_string()));
@@ -797,7 +797,7 @@ mod tests {
 
     #[test]
     fn test_save_load_graph_labels() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         ss.add_edge(a, b, Some("friend".to_string()), false);
@@ -805,34 +805,34 @@ mod tests {
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("graph.json");
         ss.save(path.to_str().unwrap()).unwrap();
-        let loaded = Superstruct::load(path.to_str().unwrap(), None, false).unwrap();
+        let loaded = Superstruct::load(path.to_str().unwrap(), None).unwrap();
         assert_eq!(loaded.neighbors(a, Some("friend".to_string())), [b].into_iter().collect());
         assert_eq!(loaded.neighbors(a, Some("rival".to_string())), [b].into_iter().collect());
     }
 
     #[test]
     fn test_save_load_sketches_rebuild() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for _ in 0..10 {
             ss.insert(HashMap::from([("city".to_string(), Value::String("NYC".to_string()))]));
         }
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("snap.json");
         ss.save(path.to_str().unwrap()).unwrap();
-        let loaded = Superstruct::load(path.to_str().unwrap(), None, false).unwrap();
+        let loaded = Superstruct::load(path.to_str().unwrap(), None).unwrap();
         assert!(loaded.maybe_contains("city", &Value::String("NYC".to_string())));
         assert!(loaded.estimate_count("city", &Value::String("NYC".to_string())) >= 10);
     }
 
     #[test]
     fn test_loaded_id_counter_no_collision() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let a = insert_record(&ss, "A", 1, "X", 1);
         let b = insert_record(&ss, "B", 2, "Y", 2);
         let dir = tempfile::TempDir::new().unwrap();
         let path = dir.path().join("ids.json");
         ss.save(path.to_str().unwrap()).unwrap();
-        let loaded = Superstruct::load(path.to_str().unwrap(), None, false).unwrap();
+        let loaded = Superstruct::load(path.to_str().unwrap(), None).unwrap();
         let c = insert_record(&loaded, "C", 3, "Z", 3);
         assert_ne!(c, a);
         assert_ne!(c, b);
@@ -845,7 +845,7 @@ mod tests {
         use std::sync::Arc;
         use std::thread;
 
-        let ss = Arc::new(Superstruct::new(None, true));
+        let ss = Arc::new(Superstruct::new(None));
         let ss_w1 = ss.clone();
         let ss_w2 = ss.clone();
         let ss_r1 = ss.clone();
@@ -892,8 +892,8 @@ mod tests {
     }
 
     #[test]
-    fn test_thread_safe_off_works() {
-        let ss = Superstruct::new(None, false);
+    fn test_single_threaded_smoke() {
+        let ss = Superstruct::new(None);
         ss.insert(HashMap::from([("x".to_string(), Value::Int(1))]));
         let out = ss.find().equals("x", Value::Int(1)).execute();
         assert_eq!(out.len(), 1);
@@ -904,7 +904,7 @@ mod tests {
     #[test]
     fn test_large_equality_vs_brute_force() {
         use rand::Rng;
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut records: Vec<HashMap<String, Value>> = Vec::new();
         let mut rng = rand::thread_rng();
         let cities = vec!["NYC", "SF", "LA"];
@@ -926,7 +926,7 @@ mod tests {
     #[test]
     fn test_large_range_vs_brute_force() {
         use rand::Rng;
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         let mut records: Vec<HashMap<String, Value>> = Vec::new();
         let mut rng = rand::thread_rng();
 
@@ -949,7 +949,7 @@ mod tests {
 
     #[test]
     fn test_zero_budget_keeps_no_indexes() {
-        let ss = Superstruct::new(Some(0), false);
+        let ss = Superstruct::new(Some(0));
         for i in 0..100 {
             ss.insert(HashMap::from([("n".to_string(), Value::Int(i))]));
         }
@@ -962,7 +962,7 @@ mod tests {
 
     #[test]
     fn test_repeated_queries_reuse_index() {
-        let ss = Superstruct::new(None, false);
+        let ss = Superstruct::new(None);
         for i in 0..100 {
             ss.insert(HashMap::from([("x".to_string(), Value::Int(i))]));
         }
@@ -971,6 +971,32 @@ mod tests {
         ss.find().equals("x", Value::Int(3)).execute();
         let types: Vec<String> = ss.index_inventory().iter().map(|(t, _, _)| t.clone()).collect();
         assert_eq!(types.iter().filter(|t| *t == "HashIndex").count(), 1);
+    }
+
+    // Regression: when a SortedIndex on an attribute already exists, an Equals
+    // query on the same attribute used to return a synthesized HashIndex key
+    // that did not match anything in the planner, so it silently fell through
+    // to a primary scan instead of reusing the SortedIndex. The fix has the
+    // planner return the actual existing key. After a Range query, an Equals
+    // query should still return the right rows AND the inventory should not
+    // gain a redundant HashIndex of zero buckets.
+    #[test]
+    fn test_planner_reuses_existing_index_for_equals() {
+        let ss = Superstruct::new(None);
+        for i in 0i64..50 {
+            ss.insert(HashMap::from([("k".to_string(), Value::Int(i))]));
+        }
+        let _ = ss.find().range("k", Value::Int(0), Value::Int(100)).execute();
+        let after_range = ss.index_inventory();
+        assert!(after_range.iter().any(|(t, _, _)| t == "SortedIndex"));
+
+        let hits = ss.find().equals("k", Value::Int(7)).execute();
+        assert_eq!(hits.len(), 1);
+        let after_equals = ss.index_inventory();
+        // No new HashIndex should have been built. The SortedIndex covers
+        // Equals on this attribute, and the planner now reuses it correctly.
+        assert!(!after_equals.iter().any(|(t, _, _)| t == "HashIndex"));
+        assert_eq!(after_equals.len(), after_range.len());
     }
 
     // ===== Index Unit Tests =====
@@ -1123,7 +1149,7 @@ mod tests {
         ]);
         let pred = Predicate::new(PredicateKind::Fuzzy, "name".to_string(), Value::String("Alise".to_string()))
             .with_threshold(0.3);
-        assert!(idx.execute(&pred).contains(&0));
+        assert!(idx.execute(&pred).contains(0));
     }
 
     #[test]

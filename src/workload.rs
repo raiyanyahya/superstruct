@@ -1,54 +1,96 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Instant;
 
-#[derive(Debug, Clone)]
-pub struct IndexStats {
-    pub hit_count: u64,
-    pub last_used: Instant,
-    pub build_cost_secs: f64,
+// One stats cell per (index_type, attribute). Hit counts and last-used time
+// are atomic so the read path can update them without grabbing an exclusive
+// lock. The map of cells itself sits behind an RwLock: read access for the
+// common case (cell already exists), write access only when a new key is
+// inserted or one is forgotten on eviction.
+#[derive(Debug)]
+struct IndexStatsCell {
+    hit_count: AtomicU64,
+    last_used_micros: AtomicU64,
+    build_cost_micros: AtomicU64,
 }
 
-impl Default for IndexStats {
-    fn default() -> Self {
-        Self {
-            hit_count: 0,
-            last_used: Instant::now(),
-            build_cost_secs: 0.0,
-        }
-    }
-}
-
-#[derive(Debug, Default)]
 pub struct WorkloadTracker {
-    stats: HashMap<(String, String), IndexStats>,
+    stats: RwLock<HashMap<(String, String), Arc<IndexStatsCell>>>,
+    epoch: Instant,
+}
+
+impl Default for WorkloadTracker {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl WorkloadTracker {
     pub fn new() -> Self {
-        Self { stats: HashMap::new() }
+        Self {
+            stats: RwLock::new(HashMap::new()),
+            epoch: Instant::now(),
+        }
     }
 
-    pub fn record_build(&mut self, key: (String, String), duration_secs: f64) {
-        let s = self.stats.entry(key).or_default();
-        s.build_cost_secs = duration_secs;
+    fn now_micros(&self) -> u64 {
+        self.epoch.elapsed().as_micros() as u64
     }
 
-    pub fn record_hit(&mut self, key: (String, String)) {
-        let s = self.stats.entry(key).or_default();
-        s.hit_count += 1;
-        s.last_used = Instant::now();
+    fn cell_for(&self, key: (String, String)) -> Arc<IndexStatsCell> {
+        // Fast path: cell already exists, return a clone of the Arc.
+        {
+            let stats = self.stats.read().unwrap();
+            if let Some(cell) = stats.get(&key) {
+                return cell.clone();
+            }
+        }
+        // Slow path: insert. Use entry() so two threads racing the same key
+        // both end up with the same Arc.
+        let mut stats = self.stats.write().unwrap();
+        stats
+            .entry(key)
+            .or_insert_with(|| {
+                Arc::new(IndexStatsCell {
+                    hit_count: AtomicU64::new(0),
+                    last_used_micros: AtomicU64::new(self.now_micros()),
+                    build_cost_micros: AtomicU64::new(0),
+                })
+            })
+            .clone()
     }
 
-    pub fn forget(&mut self, key: &(String, String)) {
-        self.stats.remove(key);
+    pub fn record_build(&self, key: (String, String), duration_secs: f64) {
+        let micros = (duration_secs * 1_000_000.0) as u64;
+        let cell = self.cell_for(key);
+        cell.build_cost_micros.store(micros, Ordering::Relaxed);
+    }
+
+    pub fn record_hit(&self, key: (String, String)) {
+        let cell = self.cell_for(key);
+        cell.hit_count.fetch_add(1, Ordering::Relaxed);
+        cell.last_used_micros
+            .store(self.now_micros(), Ordering::Relaxed);
+    }
+
+    pub fn forget(&self, key: &(String, String)) {
+        self.stats.write().unwrap().remove(key);
     }
 
     pub fn score(&self, key: &(String, String)) -> f64 {
-        match self.stats.get(key) {
+        let stats = self.stats.read().unwrap();
+        match stats.get(key) {
             None => 0.0,
-            Some(s) => {
-                let age = s.last_used.elapsed().as_secs_f64().max(1.0);
-                (s.hit_count as f64 / age) + (s.build_cost_secs * 0.1)
+            Some(cell) => {
+                let hits = cell.hit_count.load(Ordering::Relaxed) as f64;
+                let last_used = cell.last_used_micros.load(Ordering::Relaxed);
+                let now = self.now_micros();
+                let age_micros = now.saturating_sub(last_used).max(1_000_000);
+                let age_secs = age_micros as f64 / 1_000_000.0;
+                let build_cost_secs =
+                    cell.build_cost_micros.load(Ordering::Relaxed) as f64 / 1_000_000.0;
+                (hits / age_secs) + (build_cost_secs * 0.1)
             }
         }
     }

@@ -40,7 +40,7 @@ fn time_block_ntimes(n: usize, mut f: impl FnMut()) -> f64 {
 }
 
 fn populate(n: usize) -> Superstruct {
-    let ss = Superstruct::new(None, false);
+    let ss = Superstruct::new(None);
     let cities = vec!["NYC", "SF", "LA", "Boston", "Austin"];
     let names = vec![
         "alice", "anya", "andre", "bea", "ben",
@@ -112,7 +112,7 @@ fn bench_query_latency() {
 fn bench_compound_vs_scan() {
     section("3. Compound query. Indexed versus scan");
 
-    let ss = Superstruct::new(None, false);
+    let ss = Superstruct::new(None);
     let cities = vec!["NYC", "SF", "LA", "Boston", "Austin"];
     let names = vec![
         "alice", "anya", "andre", "bea", "ben",
@@ -178,7 +178,7 @@ fn bench_compound_vs_scan() {
 fn bench_concurrency() {
     section("4. Concurrency. Mixed readers and writers");
 
-    let ss = Arc::new(Superstruct::new(None, true));
+    let ss = Arc::new(Superstruct::new(None));
     let n_writers = 4;
     let n_readers = 4;
     let ops_per_thread = 2_000;

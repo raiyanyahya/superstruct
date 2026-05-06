@@ -2,7 +2,7 @@ use crate::index::base::Index;
 use crate::primary::Record;
 use crate::query::{Predicate, PredicateKind};
 use crate::Value;
-use std::collections::HashSet;
+use roaring::RoaringTreemap;
 
 #[derive(Debug)]
 pub struct SortedIndex {
@@ -53,7 +53,7 @@ impl Index for SortedIndex {
     fn remove(&mut self, record: &Record) {
         if let Some(value) = record.attrs.get(&self.attribute) {
             let lo = self.values.partition_point(|v| v < value);
-            let hi = self.values.partition_point(|v| v == value);
+            let hi = self.values.partition_point(|v| v <= value);
             for i in lo..hi {
                 if self.ids[i] == record.id {
                     self.values.remove(i);
@@ -64,29 +64,31 @@ impl Index for SortedIndex {
         }
     }
 
-    fn execute(&self, predicate: &Predicate) -> HashSet<u64> {
+    fn execute(&self, predicate: &Predicate) -> RoaringTreemap {
         match predicate.kind {
             PredicateKind::Range => {
                 let values = match &predicate.value {
                     Value::List(v) if v.len() == 2 => v,
-                    _ => return HashSet::new(),
+                    _ => return RoaringTreemap::new(),
                 };
                 let lo = self.values.partition_point(|v| v < &values[0]);
                 let hi = self.values.partition_point(|v| v <= &values[1]);
                 if lo > hi {
-                    return HashSet::new();
+                    return RoaringTreemap::new();
                 }
                 self.ids[lo..hi].iter().copied().collect()
             }
             PredicateKind::Equals => {
-                    let lo = self.values.partition_point(|v| v < &predicate.value);
-                    if lo >= self.values.len() || self.values[lo] != predicate.value {
-                        return HashSet::new();
-                    }
-                    let hi = self.values.partition_point(|v| v == &predicate.value);
-                    self.ids[lo..hi].iter().copied().collect()
+                // Both partition_point calls use monotone predicates so the
+                // search is well defined per the std contract.
+                let lo = self.values.partition_point(|v| v < &predicate.value);
+                if lo >= self.values.len() || self.values[lo] != predicate.value {
+                    return RoaringTreemap::new();
+                }
+                let hi = self.values.partition_point(|v| v <= &predicate.value);
+                self.ids[lo..hi].iter().copied().collect()
             }
-            _ => HashSet::new(),
+            _ => RoaringTreemap::new(),
         }
     }
 

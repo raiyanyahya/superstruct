@@ -2,7 +2,8 @@ use crate::index::base::Index;
 use crate::primary::Record;
 use crate::query::{Predicate, PredicateKind};
 use regex::Regex;
-use std::collections::{HashMap, HashSet};
+use roaring::RoaringTreemap;
+use std::collections::HashMap;
 use std::sync::LazyLock;
 
 static TOKEN_RE: LazyLock<Regex> =
@@ -18,7 +19,7 @@ fn tokenize(s: &str) -> Vec<String> {
 #[derive(Debug)]
 pub struct InvertedIndex {
     attribute: String,
-    postings: HashMap<String, HashSet<u64>>,
+    postings: HashMap<String, RoaringTreemap>,
 }
 
 impl InvertedIndex {
@@ -60,7 +61,7 @@ impl Index for InvertedIndex {
             if let Some(s) = value.as_str() {
                 for token in tokenize(s) {
                     let empty = if let Some(posting) = self.postings.get_mut(&token) {
-                        posting.remove(&record.id);
+                        posting.remove(record.id);
                         posting.is_empty()
                     } else {
                         false
@@ -73,21 +74,22 @@ impl Index for InvertedIndex {
         }
     }
 
-    fn execute(&self, predicate: &Predicate) -> HashSet<u64> {
+    fn execute(&self, predicate: &Predicate) -> RoaringTreemap {
         match predicate.value.as_str() {
             Some(word) => self
                 .postings
                 .get(&word.to_lowercase())
                 .cloned()
                 .unwrap_or_default(),
-            None => HashSet::new(),
+            None => RoaringTreemap::new(),
         }
     }
 
     fn memory_estimate_bytes(&self) -> usize {
         let mut total = std::mem::size_of::<Self>();
-        for (_, v) in self.postings.iter() {
-            total += v.capacity() * std::mem::size_of::<u64>();
+        for (key, v) in self.postings.iter() {
+            total += key.len();
+            total += v.serialized_size();
         }
         total += self.postings.capacity() * 64;
         total

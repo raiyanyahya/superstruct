@@ -10,7 +10,7 @@ Hash map, sorted index, trie, inverted index, trigram fuzzy index, bloom filter,
 use superstruct::*;
 use std::collections::HashMap;
 
-let ss = Superstruct::new(None, false);
+let ss = Superstruct::new(None);
 ss.insert(HashMap::from([
     ("name".into(), Value::String("Alice".into())),
     ("age".into(),  Value::Int(30)),
@@ -92,7 +92,7 @@ Then open a Rust project.
 use superstruct::*;
 use std::collections::HashMap;
 
-let ss = Superstruct::new(None, false);
+let ss = Superstruct::new(None);
 ss.insert(HashMap::from([
     ("name".into(), Value::String("Alice".into())),
     ("age".into(),  Value::Int(30)),
@@ -176,7 +176,7 @@ The user only knocks on the front desk.
 ### Inserting and deleting
 
 ```rust
-let ss = Superstruct::new(None, false);
+let ss = Superstruct::new(None);
 let alice = ss.insert(HashMap::from([
     ("name".into(), Value::String("Alice".into())),
     ("age".into(),  Value::Int(30)),
@@ -268,7 +268,7 @@ Deleting a record clears every edge that touched it.
 
 ```rust
 ss.save("snap.json").unwrap();
-let loaded = Superstruct::load("snap.json", None, false).unwrap();
+let loaded = Superstruct::load("snap.json", None).unwrap();
 ```
 
 Records and edges round-trip. Indexes rebuild on first query against the loaded instance. Sketches rebuild from the replayed inserts.
@@ -285,11 +285,15 @@ Tightening the budget triggers immediate eviction. Loosening it does nothing unt
 ### Concurrency
 
 ```rust
-let ss = Arc::new(Superstruct::new(None, true));   // thread_safe=true is default
+let ss = Arc::new(Superstruct::new(None));
 // threads can hammer ss with insert and find calls without coordination
 ```
 
-An `RwLock` wraps the entire internal state. Thread-safe by default.
+The struct is always thread-safe. Internally each piece of state lives behind
+its own lock so concurrent reads of the primary store and existing indexes do
+not serialize on a single mutex. The workload tracker uses atomic counters so
+recording a hit is lock-free on the read path. Queries that hit the warm
+fast path, where every needed index already exists, never take a write lock.
 
 ---
 
@@ -433,7 +437,13 @@ JSON only via serde. No indexes, no sketches. The load path replays records thro
 
 ### Concurrency model
 
-An `RwLock<Inner>` wraps every field in the Superstruct. The write lock serializes mutations. Reads (queries, gets, sketches) acquire a read lock. Thread-safe by default but single-threaded use is also supported.
+State is split across multiple locks rather than a single coarse one. The primary store, the planner index map, the bloom map, the count-min map, and the graph each sit behind their own outer `RwLock`. Reads of any of these pieces run in parallel across threads. The workload tracker uses atomic counters internally so hit recording is lock-free on the query fast path.
+
+The planner takes the design one step further: the index map is `HashMap<Key, Arc<RwLock<Box<dyn Index>>>>`. Each individual index has its own per-index `RwLock`. The planner-level `RwLock` is only taken in write mode when the map itself changes, namely when a new index is built or an evicted one is removed. Updating an existing index (an insert or delete propagating to a posting list) only takes a brief per-index write lock, so a writer touching the HashIndex on `city` does not block a writer touching the SortedIndex on `age`.
+
+Query execution has two paths. If every predicate in the query already has a matching index, the fast path takes a planner read lock plus per-index read locks and runs in full parallel with other readers. If at least one index has to be built, a one-time planner write lock serializes the build phase, then the query falls back to read locks for execution.
+
+Acquisition order is fixed (primary, planner, blooms, counts, graph) so deadlocks are impossible.
 
 ---
 
@@ -445,11 +455,11 @@ Numbers below come from running `cargo run --example benchmark --release` on Rus
 
 | Records | Total time | Per insert | Throughput |
 |---:|---:|---:|---:|
-| 1,000   | 7.7 ms     | 7.7 us | 129,000 ops/sec |
-| 10,000  | 78.7 ms    | 7.9 us | 127,000 ops/sec |
-| 50,000  | 402.3 ms   | 8.0 us | 124,000 ops/sec |
+| 1,000   | 6.6 ms     | 6.6 us | 152,000 ops/sec |
+| 10,000  | 49.1 ms    | 4.9 us | 204,000 ops/sec |
+| 50,000  | 237.2 ms   | 4.7 us | 211,000 ops/sec |
 
-Throughput stays flat because the per-insert overhead of the auto-attached sketches is constant and the Rust hash maps handle scale well.
+Throughput stays high because the per-insert overhead of the auto-attached sketches is constant and the Rust hash maps handle scale well. Roaring bitmaps for posting lists add records in constant time without the rehashing overhead of HashSet.
 
 ### Query latency. Cold first call vs warm reuse
 
@@ -457,27 +467,27 @@ Run on a 20,000 record store. Cold is the first time the predicate kind ever run
 
 | Query | Cold | Warm | Speedup |
 |---|---:|---:|---:|
-| `equals("city", "NYC")` | 31.2 ms | 1550 us | 20x |
-| `range("age", 25, 35)` | 19.2 ms | 1046 us | 18x |
-| `prefix("name", "a")` | 27.1 ms | 2291 us | 12x |
-| `contains("bio", "cat")` | 28.9 ms | 1173 us | 25x |
-| `fuzzy("name", "alise")` | 43.2 ms | 2809 us | 15x |
+| `equals("city", "NYC")` | 24.2 ms | 1467 us | 16x |
+| `range("age", 25, 35)` | 17.5 ms | 1442 us | 12x |
+| `prefix("name", "a")` | 23.6 ms | 2328 us | 10x |
+| `contains("bio", "cat")` | 30.4 ms | 1265 us | 24x |
+| `fuzzy("name", "alise")` | 37.3 ms | 3186 us | 12x |
 
-The cold cost is index build cost. The warm cost is the actual lookup. The 25x cold-to-warm ratio for full text reflects how much the inverted index costs to build versus how trivially fast a single posting list lookup is.
+The cold cost is index build cost. The warm cost is the actual lookup. The 24x cold-to-warm ratio for full text reflects how much the inverted index costs to build versus how trivially fast a single posting list lookup is.
 
 ### Compound query speedup
 
 | Method | Average over 5 runs |
 |---|---:|
-| Indexed compound | 0.79 ms |
-| Rust iterator scan | 7.93 ms |
-| Speedup | 10x |
+| Indexed compound | 0.37 ms |
+| Rust iterator scan | 8.9 ms |
+| Speedup | 24x |
 
-The compound query splits across SortedIndex(age) + TrieIndex(name) + HashIndex(city). At 50,000 records the indexed path is 10x faster than an equivalent Rust iterator scan.
+The compound query splits across SortedIndex(age) + TrieIndex(name) + HashIndex(city). At 50,000 records the indexed path is 24x faster than an equivalent Rust iterator scan. Most of the lift over the previous HashSet-based path comes from doing AND across posting lists as a roaring bitmap intersection rather than a hash-by-hash set intersection.
 
 ### Concurrency
 
-4 writer threads plus 4 reader threads, 2,000 ops each. 16,000 total ops. Throughput is around 1,500 ops/sec under contention. The `RwLock` serializes writers and the index/sketch updates per insert. Read-only queries can run concurrently.
+4 writer threads plus 4 reader threads, 2,000 ops each. 16,000 total ops. Throughput is around 5,800 ops/sec under contention. Each live index sits behind its own RwLock, so writer A updating the HashIndex on `city` does not block writer B updating the SortedIndex on `age`, and a reader hitting a warm index never blocks at all once that index exists. The remaining serialization is per-index: two writers updating the same index still take that one lock in turn.
 
 ### Memory footprint
 
@@ -485,14 +495,35 @@ After running every query type once on 20,000 records the inventory looks like:
 
 | Index | Attribute | Bytes |
 |---|---:|---:|
-| NgramIndex | name | 10,680,440 |
-| InvertedIndex | bio | 1,492,808 |
-| TrieIndex | name | 291,704 |
-| HashIndex | city | 287,240 |
+| NgramIndex | name | 1,236,739 |
 | SortedIndex | age | 800,000 |
-| **Total** | | **13,552,192** |
+| InvertedIndex | bio | 195,194 |
+| TrieIndex | name | 45,432 |
+| HashIndex | city | 40,660 |
+| **Total** | | **2,318,025** |
 
-The n-gram index dominates because trigram sets are large per record. The default 64 MB budget comfortably holds the full set. Tightening it triggers eviction in workload-score order.
+Roaring bitmaps for posting lists are the big lift here. The inverted index dropped 7.6x (1.49 MB to 0.20 MB), the trie dropped 6.4x, the hash index dropped 7.1x. NgramIndex went from caching a HashSet of trigrams per record to storing the lowercased value once and recomputing on demand, which combined with roaring postings is now down to 1.24 MB. The default 64 MB budget comfortably holds the full set even at much higher record counts.
+
+### Scale out. Numbers from `cargo run --example heavy_benchmark --release`
+
+The heavy benchmark stresses the structure at 10x to 50x the standard scale: 1M records for ingest, 200k for query latency, 500k for the compound vs scan, 16 writer threads + 16 reader threads.
+
+| Metric | Standard (50k / 4+4) | Heavy (1M / 16+16) |
+|---|---:|---:|
+| Insert per record | 4.5 us | 4.9 us at 1M |
+| Insert throughput | 220k ops/s | 204k ops/s at 1M |
+| Compound vs scan | 25x | **32x at 500k** |
+| Mixed read+write throughput | 6,035 ops/s | **15,163 ops/s** |
+| Memory | 2.3 MB at 20k | 18.8 MB at 200k |
+| Memory per record | 116 B | **94 B** |
+
+Three things stand out:
+
+1. **Insert throughput is flat from 50k to 1M.** Lazy index construction means inserts only hit the primary store and the sketches, regardless of how many records are already there.
+2. **Compound speedup grows with N.** 25x at 50k becomes 32x at 500k. The more data, the more the polyindex pays for itself relative to a tight Rust scan.
+3. **Per-record memory drops as N grows.** From 116 bytes per record at 20k to 94 bytes at 200k, because fixed overhead amortizes and roaring bitmaps compress denser posting lists better.
+
+The one place we hit a real ceiling is read-only concurrency at 16 threads doing top_k queries that walk thousands of candidates per call. Total throughput there is only 740 ops/s, with each thread spending 22 ms per query when single-threaded warm is 8 ms. That ~2.7x slowdown under contention is not lock contention. It is allocator pressure (each query allocates a Vec of ~25k tuples for scoring) plus CPU-cache thrashing on the shared `HashMap<u64, Record>` primary store. Both are general systems-engineering ceilings rather than flaws in the polyindex design. Further lift there would come from a packed columnar layout for primary store hot fields, or caching warm result sets.
 
 ---
 
@@ -519,8 +550,8 @@ Twenty-five callable surfaces. You can do real work with six.
 
 | Function | Returns | Notes |
 |---|---|---|
-| `Superstruct::new(memory_budget_bytes, thread_safe)` | instance | Default budget 64 MiB. |
-| `Superstruct::load(path, memory_budget_bytes, thread_safe)` | Result | Replays records and edges from a JSON snapshot. |
+| `Superstruct::new(memory_budget_bytes)` | instance | Default budget 64 MiB. |
+| `Superstruct::load(path, memory_budget_bytes)` | Result | Replays records and edges from a JSON snapshot. |
 
 ### Mutations
 
@@ -582,7 +613,7 @@ All chain off `ss.find()` and end with `.execute()`.
 - **JSON-friendly attribute values only.** If you `save` a record whose attribute contains an unserializable type, it will fail. The `Value` enum supports `Int`, `Float`, `String`, and `List` variants, all of which serialize cleanly.
 - **Bloom filters cannot delete.** False positive rate rises slowly with churn. Wipe and rebuild for a long-running process if precision matters.
 - **N-gram index doubles memory.** It stores per-record trigram sets so Jaccard can be computed without a primary store walk.
-- **Coarse locking.** The `RwLock` wraps the entire internal state. Reads run concurrently. Writes serialize. For real parallel throughput across cores of mixed read/write workloads, a finer-grained lock per index would help.
+- **Two writers updating the same index serialize on that index's per-index RwLock.** Writers touching different indexes run in parallel, but if every record carries the same attribute (e.g. every insert sets `city`), all writers contend on the HashIndex for that attribute. A lock-free posting list would lift this further; not yet implemented.
 - **Compound speedup is dataset dependent.** Indexes shine when predicates are selective and base costs are nontrivial. On small in-memory datasets a Rust iterator scan is hard to beat.
 - **No SQL.** No JOIN. No window functions. The query language is intentionally tiny and conjunctive plus boolean composition.
 - **No type system on attributes.** Mixing ints and strings under the same attribute will work for some indexes and break for others (the sorted index will refuse to compare them).
@@ -593,7 +624,6 @@ All chain off `ss.find()` and end with `.execute()`.
 
 The architecture has clean places to plug each of these in.
 
-- **Roaring bitmaps** for the id sets, especially in the inverted index and the n-gram candidate phase.
 - **Learned indexes** as a sixth index type. Train a tiny model per attribute and let the planner consult it for range queries.
 - **Disk-backed primary store** so the structure can hold more than RAM and only materialize the working set in memory.
 - **Cost-based query planner** that estimates selectivity of each predicate and reorders the AND chain so the most selective runs first.
@@ -633,13 +663,14 @@ superstruct/
 │       ├── bloom.rs                   probable-membership filter
 │       └── countmin.rs                approximate frequency counter
 ├── examples/
-│   └── benchmark.rs                   live throughput, latency, memory
+│   ├── benchmark.rs                   live throughput, latency, memory at 50k records
+│   └── heavy_benchmark.rs             stress run at 1M records and 16+16 threads
 └── tests/
-    └── integration_test.rs            84 tests: core, text, sketches, graph,
+    └── integration_test.rs            85 tests: core, text, sketches, graph,
                                         persistence, concurrency, stress, indexes
 ```
 
-84 tests, all green at the time of writing.
+85 tests, all green at the time of writing.
 
 ---
 
@@ -652,8 +683,11 @@ cargo test
 # Verbose output
 cargo test -- --nocapture
 
-# Benchmark
+# Standard benchmark (50k records, 4+4 thread concurrency, ~10s wall)
 cargo run --example benchmark --release
+
+# Heavy benchmark (up to 1M records, 16+16 thread concurrency, ~3 min wall)
+cargo run --example heavy_benchmark --release
 
 # Build optimized
 cargo build --release

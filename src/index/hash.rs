@@ -2,12 +2,13 @@ use crate::index::base::Index;
 use crate::primary::Record;
 use crate::query::{Predicate, PredicateKind};
 use crate::Value;
-use std::collections::{HashMap, HashSet};
+use roaring::RoaringTreemap;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 pub struct HashIndex {
     attribute: String,
-    buckets: HashMap<Value, HashSet<u64>>,
+    buckets: HashMap<Value, RoaringTreemap>,
 }
 
 impl HashIndex {
@@ -36,14 +37,17 @@ impl Index for HashIndex {
 
     fn insert(&mut self, record: &Record) {
         if let Some(value) = record.attrs.get(&self.attribute) {
-            self.buckets.entry(value.clone()).or_default().insert(record.id);
+            self.buckets
+                .entry(value.clone())
+                .or_default()
+                .insert(record.id);
         }
     }
 
     fn remove(&mut self, record: &Record) {
         if let Some(value) = record.attrs.get(&self.attribute) {
             if let Some(bucket) = self.buckets.get_mut(value) {
-                bucket.remove(&record.id);
+                bucket.remove(record.id);
                 if bucket.is_empty() {
                     self.buckets.remove(value);
                 }
@@ -51,7 +55,7 @@ impl Index for HashIndex {
         }
     }
 
-    fn execute(&self, predicate: &Predicate) -> HashSet<u64> {
+    fn execute(&self, predicate: &Predicate) -> RoaringTreemap {
         self.buckets
             .get(&predicate.value)
             .cloned()
@@ -61,7 +65,7 @@ impl Index for HashIndex {
     fn memory_estimate_bytes(&self) -> usize {
         let mut total = std::mem::size_of::<Self>();
         for (_, bucket) in self.buckets.iter() {
-            total += bucket.capacity() * std::mem::size_of::<u64>();
+            total += bucket.serialized_size();
         }
         total += self.buckets.capacity() * 64;
         total

@@ -1,19 +1,20 @@
 use crate::index::base::Index;
 use crate::primary::Record;
 use crate::query::{Predicate, PredicateKind};
-use std::collections::{HashMap, HashSet};
+use roaring::RoaringTreemap;
+use std::collections::HashMap;
 
 #[derive(Debug)]
 struct TrieNode {
     children: HashMap<char, TrieNode>,
-    ids: HashSet<u64>,
+    ids: RoaringTreemap,
 }
 
 impl TrieNode {
     fn new() -> Self {
         Self {
             children: HashMap::new(),
-            ids: HashSet::new(),
+            ids: RoaringTreemap::new(),
         }
     }
 }
@@ -48,11 +49,11 @@ impl TrieIndex {
         Some(node)
     }
 
-    fn collect_subtree(node: &TrieNode) -> HashSet<u64> {
-        let mut out = HashSet::new();
+    fn collect_subtree(node: &TrieNode) -> RoaringTreemap {
+        let mut out = RoaringTreemap::new();
         let mut stack = vec![node];
         while let Some(current) = stack.pop() {
-            out.extend(&current.ids);
+            out |= &current.ids;
             for child in current.children.values() {
                 stack.push(child);
             }
@@ -95,26 +96,26 @@ impl Index for TrieIndex {
                         None => return,
                     }
                 }
-                node.ids.remove(&record.id);
+                node.ids.remove(record.id);
             }
         }
     }
 
-    fn execute(&self, predicate: &Predicate) -> HashSet<u64> {
+    fn execute(&self, predicate: &Predicate) -> RoaringTreemap {
         let target = match predicate.value.as_str() {
             Some(s) => s,
-            None => return HashSet::new(),
+            None => return RoaringTreemap::new(),
         };
 
         let node = match self.walk_to(target) {
             Some(n) => n,
-            None => return HashSet::new(),
+            None => return RoaringTreemap::new(),
         };
 
         match predicate.kind {
             PredicateKind::Prefix => Self::collect_subtree(node),
             PredicateKind::Equals => node.ids.clone(),
-            _ => HashSet::new(),
+            _ => RoaringTreemap::new(),
         }
     }
 
@@ -123,7 +124,7 @@ impl Index for TrieIndex {
         let mut stack = vec![&self.root];
         while let Some(node) = stack.pop() {
             total += node.children.capacity() * 64;
-            total += node.ids.capacity() * std::mem::size_of::<u64>();
+            total += node.ids.serialized_size();
             for child in node.children.values() {
                 stack.push(child);
             }

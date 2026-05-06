@@ -1,6 +1,6 @@
 use crate::graph::GraphStore;
 use crate::planner::Planner;
-use crate::primary::{PrimaryStore, Record};
+use crate::primary::PrimaryStore;
 use crate::query::{Predicate, PredicateKind, Node, And, Or, Not, TopK, Query};
 use crate::sketch::{BloomSketch, CountMinSketch};
 use crate::value::{Attrs, Value};
@@ -12,60 +12,71 @@ use std::sync::RwLock;
 
 pub const DEFAULT_MEMORY_BUDGET_BYTES: usize = 64 * 1024 * 1024;
 
-struct Inner {
-    primary: PrimaryStore,
-    workload: WorkloadTracker,
-    planner: Planner,
-    blooms: HashMap<String, BloomSketch>,
-    counts: HashMap<String, CountMinSketch>,
-    graph: GraphStore,
-}
-
+// Each piece of state lives behind its own lock so concurrent reads of the
+// primary store and existing indexes do not serialize on a single mutex.
+// WorkloadTracker has its own internal synchronization (atomics + RwLock on
+// the inner map) so it does not need an outer lock here. Acquisition order
+// for the locks below, to avoid deadlock: primary, planner, blooms, counts,
+// graph. All call sites in this file follow that order.
 pub struct Superstruct {
-    inner: RwLock<Inner>,
+    primary: RwLock<PrimaryStore>,
+    planner: RwLock<Planner>,
+    workload: WorkloadTracker,
+    blooms: RwLock<HashMap<String, BloomSketch>>,
+    counts: RwLock<HashMap<String, CountMinSketch>>,
+    graph: RwLock<GraphStore>,
 }
 
 impl Superstruct {
-    pub fn new(memory_budget_bytes: Option<usize>, _thread_safe: bool) -> Self {
+    pub fn new(memory_budget_bytes: Option<usize>) -> Self {
         let budget = memory_budget_bytes.unwrap_or(DEFAULT_MEMORY_BUDGET_BYTES);
         Self {
-            inner: RwLock::new(Inner {
-                primary: PrimaryStore::new(),
-                workload: WorkloadTracker::new(),
-                planner: Planner::new(budget),
-                blooms: HashMap::new(),
-                counts: HashMap::new(),
-                graph: GraphStore::new(),
-            }),
+            primary: RwLock::new(PrimaryStore::new()),
+            planner: RwLock::new(Planner::new(budget)),
+            workload: WorkloadTracker::new(),
+            blooms: RwLock::new(HashMap::new()),
+            counts: RwLock::new(HashMap::new()),
+            graph: RwLock::new(GraphStore::new()),
         }
     }
 
     pub fn insert(&self, attrs: Attrs) -> u64 {
-        let mut inner = self.inner.write().unwrap();
-        let record = inner.primary.insert(attrs);
-        inner.planner.on_insert(&record);
-        for (attr, value) in &record.attrs {
-            inner.blooms.entry(attr.clone()).or_default().add(value);
-            inner.counts.entry(attr.clone()).or_default().add(value);
+        let record = self.primary.write().unwrap().insert(attrs);
+        // Per-index propagation only needs a read lock on the planner: the
+        // index map is not changing, only each per-index RwLock is taken
+        // briefly inside on_insert. Two parallel inserts of records that
+        // touch disjoint attributes can therefore run with full overlap on
+        // their per-index writes.
+        self.planner.read().unwrap().on_insert(&record);
+        {
+            let mut blooms = self.blooms.write().unwrap();
+            let mut counts = self.counts.write().unwrap();
+            for (attr, value) in &record.attrs {
+                blooms.entry(attr.clone()).or_default().add(value);
+                counts.entry(attr.clone()).or_default().add(value);
+            }
         }
         record.id
     }
 
     pub fn delete(&self, record_id: u64) -> bool {
-        let mut inner = self.inner.write().unwrap();
-        match inner.primary.delete(record_id) {
+        let removed = self.primary.write().unwrap().delete(record_id);
+        match removed {
             None => false,
             Some(record) => {
-                inner.planner.on_delete(&record);
-                inner.graph.remove_node(record_id);
+                self.planner.read().unwrap().on_delete(&record);
+                self.graph.write().unwrap().remove_node(record_id);
                 true
             }
         }
     }
 
     pub fn get(&self, record_id: u64) -> Option<Attrs> {
-        let inner = self.inner.read().unwrap();
-        inner.primary.get(record_id).map(|r| r.attrs.clone())
+        self.primary
+            .read()
+            .unwrap()
+            .get(record_id)
+            .map(|r| r.attrs.clone())
     }
 
     pub fn find(&self) -> QueryBuilder<'_> {
@@ -73,55 +84,77 @@ impl Superstruct {
     }
 
     pub fn execute(&self, query: Query) -> Vec<Attrs> {
-        let mut inner = self.inner.write().unwrap();
-        let Inner { primary, workload, planner, .. } = &mut *inner;
-        planner.execute(&query, primary, workload)
+        // Fast path. Take read locks on everything mutating state could need
+        // and try the query straight against the existing index set. If every
+        // predicate is already covered, we never touch a write lock and many
+        // threads can run this path at once. Workload is internally
+        // synchronized via atomics, so no lock to take there.
+        {
+            let planner = self.planner.read().unwrap();
+            if planner.covers_query(&query) {
+                let primary = self.primary.read().unwrap();
+                return planner.execute(&query, &primary, &self.workload);
+            }
+        }
+
+        // Slow path. At least one predicate's index has to be built. Take the
+        // planner write lock, build whatever the query needs, then drop the
+        // write lock and run the query under read locks. Other threads only
+        // serialize on the build window.
+        {
+            let primary = self.primary.read().unwrap();
+            let mut planner = self.planner.write().unwrap();
+            planner.prepare_for_query(&query, &primary, &self.workload);
+        }
+
+        let planner = self.planner.read().unwrap();
+        let primary = self.primary.read().unwrap();
+        planner.execute(&query, &primary, &self.workload)
     }
 
     pub fn maybe_contains(&self, attribute: &str, value: &Value) -> bool {
-        let inner = self.inner.read().unwrap();
-        inner.blooms.get(attribute).map_or(false, |b| b.maybe_contains(value))
+        self.blooms
+            .read()
+            .unwrap()
+            .get(attribute)
+            .is_some_and(|b| b.maybe_contains(value))
     }
 
     pub fn estimate_count(&self, attribute: &str, value: &Value) -> u64 {
-        let inner = self.inner.read().unwrap();
-        inner.counts.get(attribute).map_or(0, |cm| cm.estimate(value))
+        self.counts
+            .read()
+            .unwrap()
+            .get(attribute)
+            .map_or(0, |cm| cm.estimate(value))
     }
 
     pub fn add_edge(&self, a: u64, b: u64, label: Option<String>, directed: bool) {
-        let mut inner = self.inner.write().unwrap();
-        inner.graph.add_edge(a, b, label, directed);
+        self.graph.write().unwrap().add_edge(a, b, label, directed);
     }
 
     pub fn remove_edge(&self, a: u64, b: u64, label: Option<String>, directed: bool) {
-        let mut inner = self.inner.write().unwrap();
-        inner.graph.remove_edge(a, b, label, directed);
+        self.graph.write().unwrap().remove_edge(a, b, label, directed);
     }
 
     pub fn neighbors(&self, record_id: u64, label: Option<String>) -> HashSet<u64> {
-        let inner = self.inner.read().unwrap();
-        inner.graph.neighbors(record_id, &label)
+        self.graph.read().unwrap().neighbors(record_id, &label)
     }
 
     pub fn bfs(&self, start: u64, max_depth: Option<usize>, label: Option<String>) -> HashMap<u64, usize> {
-        let inner = self.inner.read().unwrap();
-        inner.graph.bfs(start, max_depth, &label)
+        self.graph.read().unwrap().bfs(start, max_depth, &label)
     }
 
     pub fn shortest_path(&self, source: u64, target: u64, label: Option<String>) -> Option<Vec<u64>> {
-        let inner = self.inner.read().unwrap();
-        inner.graph.shortest_path(source, target, &label)
+        self.graph.read().unwrap().shortest_path(source, target, &label)
     }
 
     pub fn set_memory_budget(&self, bytes_limit: usize) {
-        let mut inner = self.inner.write().unwrap();
-        let Inner { planner, workload, .. } = &mut *inner;
-        planner.set_memory_budget(bytes_limit, workload);
+        let mut planner = self.planner.write().unwrap();
+        planner.set_memory_budget(bytes_limit, &self.workload);
     }
 
     pub fn len(&self) -> usize {
-        let inner = self.inner.read().unwrap();
-        inner.primary.len()
+        self.primary.read().unwrap().len()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -129,26 +162,24 @@ impl Superstruct {
     }
 
     pub fn index_inventory(&self) -> Vec<(String, String, usize)> {
-        let inner = self.inner.read().unwrap();
-        inner.planner.index_inventory()
+        self.planner.read().unwrap().index_inventory()
     }
 
     pub fn save(&self, path: &str) -> std::io::Result<()> {
-        let inner = self.inner.read().unwrap();
-        let records: Vec<SerializableRecord> = inner
-            .primary
+        let primary = self.primary.read().unwrap();
+        let graph = self.graph.read().unwrap();
+        let records: Vec<SerializableRecord> = primary
             .iter()
             .map(|r| SerializableRecord { id: r.id, attrs: r.attrs.clone() })
             .collect();
-        let edges: Vec<SerializableEdge> = inner
-            .graph
+        let edges: Vec<SerializableEdge> = graph
             .edges()
             .into_iter()
             .map(|(from, to, label)| SerializableEdge { from, to, label })
             .collect();
         let payload = PersistencePayload {
             version: 1,
-            next_id: inner.primary.next_id(),
+            next_id: primary.next_id(),
             records,
             edges,
         };
@@ -156,34 +187,34 @@ impl Superstruct {
         fs::write(path, json)
     }
 
-    pub fn load(path: &str, memory_budget_bytes: Option<usize>, thread_safe: bool) -> std::io::Result<Self> {
+    pub fn load(path: &str, memory_budget_bytes: Option<usize>) -> std::io::Result<Self> {
         let json = fs::read_to_string(path)?;
         let payload: PersistencePayload = serde_json::from_str(&json)?;
-        let budget = memory_budget_bytes.unwrap_or(DEFAULT_MEMORY_BUDGET_BYTES);
 
-        let ss = Self::new(Some(budget), thread_safe);
-        let mut inner = ss.inner.write().unwrap();
-        inner.primary.set_next_id(payload.next_id);
+        let ss = Self::new(memory_budget_bytes);
+        {
+            let mut primary = ss.primary.write().unwrap();
+            let mut blooms = ss.blooms.write().unwrap();
+            let mut counts = ss.counts.write().unwrap();
+            for entry in &payload.records {
+                primary.insert_at(entry.id, entry.attrs.clone());
+                for (attr, value) in &entry.attrs {
+                    blooms.entry(attr.clone()).or_default().add(value);
+                    counts.entry(attr.clone()).or_default().add(value);
+                }
+            }
+            primary.set_next_id(payload.next_id);
+        }
 
-        for entry in &payload.records {
-            let record = Record { id: entry.id, attrs: entry.attrs.clone() };
-            inner.primary.insert_at(entry.id, entry.attrs.clone());
-            inner.planner.on_insert(&record);
-            for (attr, value) in &record.attrs {
-                inner.blooms.entry(attr.clone()).or_default().add(value);
-                inner.counts.entry(attr.clone()).or_default().add(value);
+        {
+            let mut graph = ss.graph.write().unwrap();
+            for edge in &payload.edges {
+                graph.add_edge(edge.from, edge.to, edge.label.clone(), true);
             }
         }
 
-        inner.primary.set_next_id(payload.next_id);
-
-        for edge in &payload.edges {
-            inner.graph.add_edge(edge.from, edge.to, edge.label.clone(), true);
-        }
-
-        inner.planner = Planner::new(budget);
-
-        drop(inner);
+        // Indexes intentionally not rebuilt here. They materialize lazily on
+        // the first query that needs them, same contract as the live struct.
         Ok(ss)
     }
 }
