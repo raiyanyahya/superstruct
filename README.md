@@ -4,7 +4,7 @@
 
 Superstruct is an in-memory Rust data structure that holds your records in one place and answers your questions through a zoo of classical sub-structures it builds on demand. You insert hash maps. You ask questions. The structure observes your workload and decides which sub-structure to consult, builds it lazily the first time it is needed and evicts it when memory gets tight. **You never declare an index.**
 
-Hash map, sorted index, trie, inverted index, trigram fuzzy index, bloom filter, count-min sketch and a graph layer all sit inside one Rust struct. A small chained query DSL routes across them. The whole thing fits behind 25 public functions.
+Hash map, sorted index, trie, inverted index, trigram fuzzy and substring index, 2D spatial index, bloom filter, count-min sketch and a weighted graph layer with shortest path, Dijkstra, and PageRank all sit inside one Rust struct. A small chained query DSL routes across them.
 
 ```rust
 use superstruct::*;
@@ -161,11 +161,12 @@ Same architecture, told as a small office.
   - The **Sorted Specialist** keeps cards in order. Great at "everyone aged 25 to 35".
   - The **Trie Specialist** is obsessed with how words start.
   - The **Inverted Index Specialist** has read every bio and remembers every word.
-  - The **N-gram Specialist** is the one to ask when you misspell things.
+  - The **N-gram Specialist** is the one to ask when you misspell things, and when you ask "find anything containing this exact substring".
+  - The **Cartographer of Places** is the spatial index. Hand them a bounding box or a point and a radius, they give you everyone inside.
 - **The Sketches** are two clerks at the front desk. One says "I am pretty sure I have not seen this before, do not bother going to the Vault." The other says "I have seen this name about 47 times this week."
 - **The Manager** is the planner. Hires a Specialist when a new kind of question shows up. Fires the laziest Specialist when the office gets crowded. Splits compound questions across multiple Specialists and combines their answers.
 - **HR** is the workload tracker. Keeps a tally of which Specialist gets used a lot and which one is just sitting around.
-- **The Cartographer** is the graph store. Knows who is friends with whom. Independent of the Specialists.
+- **The Cartographer of People** is the graph store. Knows who is friends with whom, with what weight, and can answer "shortest path", "PageRank", and "BFS depth from here". Independent of the Specialists.
 
 The user only knocks on the front desk.
 
@@ -504,6 +505,20 @@ After running every query type once on 20,000 records the inventory looks like:
 
 Roaring bitmaps for posting lists are the big lift here. The inverted index dropped 7.6x (1.49 MB to 0.20 MB), the trie dropped 6.4x, the hash index dropped 7.1x. NgramIndex went from caching a HashSet of trigrams per record to storing the lowercased value once and recomputing on demand, which combined with roaring postings is now down to 1.24 MB. The default 64 MB budget comfortably holds the full set even at much higher record counts.
 
+### Spatial, substring, and weighted graph (50k records)
+
+| Operation | Result |
+|---|---|
+| `within_box` 500x500 in a 1000x1000 plane | warm 2.8 ms (12.5k matches) |
+| `near` radius 50 | warm 47 us |
+| `substring("cat")` (matches inside words) | warm 3.6 ms (12.5k matches), 2x faster than Rust scan |
+| `contains("cat")` (word boundary only, for contrast) | warm 0.3 us, 0 matches in this dataset |
+| `dijkstra` on 5k nodes, 25k edges | 1.1 ms per call |
+| `shortest_path_weighted` on the same graph | 0.9 ms per call |
+| `pagerank(0.85, 30 iterations)` | 15 ms per call |
+
+The substring vs contains split is intentional. Inverted index splits on word boundaries so it cannot match the substring `cat` inside `concatenate`. Substring search finds it via roaring trigram intersection plus a literal verification pass. The two work side by side and you pick which semantic you want per query.
+
 ### Scale out. Numbers from `cargo run --example heavy_benchmark --release`
 
 The heavy benchmark stresses the structure at 10x to 50x the standard scale: 1M records for ingest, 200k for query latency, 500k for the compound vs scan, 16 writer threads + 16 reader threads.
@@ -544,7 +559,7 @@ The packaging is the speciality. An embeddable, in-process, schema-less Rust str
 
 ## Full API reference
 
-Twenty-five callable surfaces. You can do real work with six.
+Around thirty callable surfaces. You can do real work with six.
 
 ### Lifecycle
 
@@ -559,7 +574,8 @@ Twenty-five callable surfaces. You can do real work with six.
 |---|---|---|
 | `insert(attrs)` | u64 | Auto-assigned monotonic id. Updates indexes and sketches. |
 | `delete(id)` | bool | Cleans up edges that touched the record. |
-| `add_edge(a, b, label, directed)` | () | Bidirectional unless `directed`. |
+| `add_edge(a, b, label, directed)` | () | Bidirectional unless `directed`. Weight defaults to 1.0. |
+| `add_weighted_edge(a, b, weight, label, directed)` | () | Same as `add_edge` with an explicit edge weight. |
 | `remove_edge(a, b, label, directed)` | () | Symmetric to `add_edge`. |
 
 ### Direct lookups
@@ -583,6 +599,9 @@ All chain off `ss.find()` and end with `.execute()`.
 | `prefix(attr, prefix)` | builder | Trie index. |
 | `contains(attr, word)` | builder | Inverted index. Lowercase tokens. |
 | `fuzzy(attr, target, threshold)` | builder | N-gram index. Jaccard similarity. |
+| `substring(attr, query)` | builder | N-gram index. Literal substring anywhere in the value, including across word boundaries. |
+| `within_box(attr, min_x, min_y, max_x, max_y)` | builder | Spatial index. 2D bounding-box filter. |
+| `near(attr, x, y, radius)` | builder | Spatial index. Records inside a 2D circle. |
 | `any_of(nodes)` | builder | OR group. Takes `Vec<Node>`. |
 | `exclude(node)` | builder | NOT. Takes a `Node`. |
 | `top_k(attr, k, descending)` | builder | Final ordering step. |
@@ -594,8 +613,11 @@ All chain off `ss.find()` and end with `.execute()`.
 | Function | Returns | Notes |
 |---|---|---|
 | `neighbors(id, label)` | HashSet&lt;u64&gt; | Optional label filter. |
-| `bfs(start, max_depth, label)` | HashMap&lt;u64, usize&gt; | Map of node to depth. |
-| `shortest_path(src, tgt, label)` | Option&lt;Vec&lt;u64&gt;&gt; | Inclusive of both endpoints. |
+| `bfs(start, max_depth, label)` | HashMap&lt;u64, usize&gt; | Unweighted. Map of node to depth. |
+| `shortest_path(src, tgt, label)` | Option&lt;Vec&lt;u64&gt;&gt; | Unweighted. Inclusive of both endpoints. |
+| `dijkstra(src, label)` | HashMap&lt;u64, f64&gt; | Single-source shortest weighted distance to every reachable node. |
+| `shortest_path_weighted(src, tgt, label)` | Option&lt;(Vec&lt;u64&gt;, f64)&gt; | Weighted shortest path plus total cost. |
+| `pagerank(damping, iterations)` | HashMap&lt;u64, f64&gt; | PageRank over weighted out-edges. Typical args: 0.85, 30. |
 
 ### Persistence and config
 
@@ -649,7 +671,7 @@ superstruct/
 │   ├── value.rs                       Value enum: Int, Float, String, List
 │   ├── planner.rs                     lazy build, decomposition, eviction
 │   ├── workload.rs                    per-index hit counts and recency score
-│   ├── graph.rs                       adjacency, neighbors, BFS, shortest path
+│   ├── graph.rs                       adjacency, BFS, weighted shortest path, Dijkstra, PageRank
 │   ├── index/
 │   │   ├── mod.rs                     module declarations
 │   │   ├── base.rs                    Index trait
@@ -657,7 +679,8 @@ superstruct/
 │   │   ├── sorted.rs                  range and equality on sorted arrays
 │   │   ├── trie.rs                    character trie for prefix
 │   │   ├── inverted.rs                word-level full text
-│   │   └── ngram.rs                   trigram fuzzy match
+│   │   ├── ngram.rs                   trigram fuzzy match and substring search
+│   │   └── spatial.rs                 2D spatial bbox and radius queries
 │   └── sketch/
 │       ├── mod.rs                     module declarations
 │       ├── bloom.rs                   probable-membership filter
@@ -666,11 +689,12 @@ superstruct/
 │   ├── benchmark.rs                   live throughput, latency, memory at 50k records
 │   └── heavy_benchmark.rs             stress run at 1M records and 16+16 threads
 └── tests/
-    └── integration_test.rs            85 tests: core, text, sketches, graph,
-                                        persistence, concurrency, stress, indexes
+    └── integration_test.rs            103 tests: core, text, sketches, graph,
+                                        persistence, concurrency, stress, indexes,
+                                        spatial, substring, Dijkstra, PageRank
 ```
 
-85 tests, all green at the time of writing.
+103 tests, all green at the time of writing.
 
 ---
 

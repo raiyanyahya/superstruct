@@ -7,6 +7,11 @@ pub enum PredicateKind {
     Prefix,
     Contains,
     Fuzzy,
+    // Spatial. Both served by SpatialIndex.
+    Within,
+    Near,
+    // Substring search. Served by NgramIndex with strict trigram intersection.
+    Substring,
 }
 
 #[derive(Debug, Clone)]

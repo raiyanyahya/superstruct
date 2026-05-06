@@ -243,11 +243,136 @@ fn bench_memory_inventory() {
     println!("  {:>15} {:>12} {:>14}", "total", "", fmt_k(total));
 }
 
+fn bench_spatial() {
+    section("6. Spatial queries. 50,000 random points in a 1000x1000 plane");
+
+    let ss = Superstruct::new(None);
+    let mut rng = StdRng::seed_from_u64(7);
+    for _ in 0..50_000 {
+        let mut attrs = HashMap::new();
+        attrs.insert("loc".to_string(), Value::List(vec![
+            Value::Float(rng.gen_range(0.0..1000.0)),
+            Value::Float(rng.gen_range(0.0..1000.0)),
+        ]));
+        ss.insert(attrs);
+    }
+
+    let bbox = || {
+        ss.find().within_box("loc", 250.0, 250.0, 750.0, 750.0).execute();
+    };
+    let near = || {
+        ss.find().near("loc", 500.0, 500.0, 50.0).execute();
+    };
+
+    println!("{:>22} {:>14} {:>14}", "query", "cold", "warm avg");
+    let cold_bbox = time_block(bbox);
+    let warm_bbox = time_block_ntimes(50, bbox) / 50.0;
+    println!("{:>22} {:>14} {:>14}", "within_box 500x500", fmt_ms(cold_bbox), fmt_us(warm_bbox));
+    let cold_near = time_block(near);
+    let warm_near = time_block_ntimes(50, near) / 50.0;
+    println!("{:>22} {:>14} {:>14}", "near radius 50", fmt_ms(cold_near), fmt_us(warm_near));
+}
+
+fn bench_substring() {
+    section("7. Substring search vs Contains vs scan. 50,000 records");
+
+    let ss = Superstruct::new(None);
+    let mut rng = StdRng::seed_from_u64(13);
+    let words = vec![
+        "configuration", "concatenate", "scattered notes", "encyclopedia",
+        "platypus", "transmission", "concentration", "category",
+        "metaphor", "kaleidoscope", "harmonious", "tessellation",
+    ];
+    let mut records: Vec<HashMap<String, Value>> = Vec::with_capacity(50_000);
+    for _ in 0..50_000 {
+        let mut attrs = HashMap::new();
+        attrs.insert("bio".to_string(), Value::String(words[rng.gen_range(0..words.len())].to_string()));
+        ss.insert(attrs.clone());
+        records.push(attrs);
+    }
+
+    // contains() splits on word boundary so it cannot match "cat" inside
+    // "concatenate". substring() can. Both are warmed before timing.
+    ss.find().contains("bio", "cat").execute();
+    ss.find().substring("bio", "cat").execute();
+
+    let warm_contains = time_block_ntimes(50, || {
+        ss.find().contains("bio", "cat").execute();
+    }) / 50.0;
+    let warm_substring = time_block_ntimes(50, || {
+        ss.find().substring("bio", "cat").execute();
+    }) / 50.0;
+    let scan = time_block_ntimes(50, || {
+        let _: Vec<_> = records
+            .iter()
+            .filter(|r| match r.get("bio") {
+                Some(Value::String(s)) => s.to_lowercase().contains("cat"),
+                _ => false,
+            })
+            .collect();
+    }) / 50.0;
+
+    let n_contains = ss.find().contains("bio", "cat").execute().len();
+    let n_substring = ss.find().substring("bio", "cat").execute().len();
+
+    println!("  contains  (word boundary): {} matches in {}", fmt_k(n_contains), fmt_us(warm_contains));
+    println!("  substring (anywhere):      {} matches in {}", fmt_k(n_substring), fmt_us(warm_substring));
+    println!("  Rust scan reference:       {} matches in {}", fmt_k(n_substring), fmt_us(scan));
+    if warm_substring > 0.0 {
+        println!("  substring vs scan: {:.0}x faster", scan / warm_substring);
+    }
+}
+
+fn bench_graph_algorithms() {
+    section("8. Weighted graph. 5,000 nodes, 25,000 edges, Dijkstra + PageRank");
+
+    let ss = Superstruct::new(None);
+    let n_nodes = 5_000;
+    let mut node_ids: Vec<u64> = Vec::with_capacity(n_nodes);
+    for i in 0..n_nodes {
+        let id = ss.insert(HashMap::from([("n".to_string(), Value::Int(i as i64))]));
+        node_ids.push(id);
+    }
+
+    let mut rng = StdRng::seed_from_u64(99);
+    let n_edges = 25_000;
+    for _ in 0..n_edges {
+        let a = node_ids[rng.gen_range(0..n_nodes)];
+        let b = node_ids[rng.gen_range(0..n_nodes)];
+        if a == b { continue; }
+        let weight = rng.gen_range(1.0..10.0);
+        ss.add_weighted_edge(a, b, weight, None, true);
+    }
+
+    let source = node_ids[0];
+    let target = node_ids[n_nodes - 1];
+
+    let dijkstra_time = time_block_ntimes(5, || {
+        let _ = ss.dijkstra(source, None);
+    }) / 5.0;
+
+    let path_time = time_block_ntimes(5, || {
+        let _ = ss.shortest_path_weighted(source, target, None);
+    }) / 5.0;
+
+    let pagerank_time = time_block_ntimes(3, || {
+        let _ = ss.pagerank(0.85, 30);
+    }) / 3.0;
+
+    let dist = ss.dijkstra(source, None);
+    println!("  Dijkstra single-source:   {} reachable, {} per call", fmt_k(dist.len()), fmt_ms(dijkstra_time));
+    println!("  Shortest path src to tgt: {} per call", fmt_ms(path_time));
+    println!("  PageRank 30 iterations:   {} per call", fmt_ms(pagerank_time));
+}
+
 fn main() {
     bench_insert_throughput();
     bench_query_latency();
     bench_compound_vs_scan();
     bench_concurrency();
     bench_memory_inventory();
+    bench_spatial();
+    bench_substring();
+    bench_graph_algorithms();
     println!("\nDone.");
 }

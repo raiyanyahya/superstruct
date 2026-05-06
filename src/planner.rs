@@ -1,5 +1,5 @@
 use crate::index::base::Index;
-use crate::index::{HashIndex, SortedIndex, TrieIndex, InvertedIndex, NgramIndex};
+use crate::index::{HashIndex, SortedIndex, TrieIndex, InvertedIndex, NgramIndex, SpatialIndex};
 use crate::primary::{PrimaryStore, Record};
 use crate::query::{Predicate, PredicateKind, Node, And, Or, Not, Query};
 use crate::value::Attrs;
@@ -22,7 +22,8 @@ fn build_index_for(kind: PredicateKind, attribute: &str) -> Box<dyn Index> {
         PredicateKind::Range => Box::new(SortedIndex::new(attribute.to_string())),
         PredicateKind::Prefix => Box::new(TrieIndex::new(attribute.to_string())),
         PredicateKind::Contains => Box::new(InvertedIndex::new(attribute.to_string())),
-        PredicateKind::Fuzzy => Box::new(NgramIndex::new(attribute.to_string())),
+        PredicateKind::Fuzzy | PredicateKind::Substring => Box::new(NgramIndex::new(attribute.to_string())),
+        PredicateKind::Within | PredicateKind::Near => Box::new(SpatialIndex::new(attribute.to_string())),
     }
 }
 
@@ -32,7 +33,8 @@ fn index_type_name(kind: PredicateKind) -> &'static str {
         PredicateKind::Range => "SortedIndex",
         PredicateKind::Prefix => "TrieIndex",
         PredicateKind::Contains => "InvertedIndex",
-        PredicateKind::Fuzzy => "NgramIndex",
+        PredicateKind::Fuzzy | PredicateKind::Substring => "NgramIndex",
+        PredicateKind::Within | PredicateKind::Near => "SpatialIndex",
     }
 }
 
@@ -50,7 +52,8 @@ fn key_can_answer(key: &IndexKey, predicate: &Predicate) -> bool {
             | ("SortedIndex", PredicateKind::Range | PredicateKind::Equals)
             | ("TrieIndex", PredicateKind::Prefix | PredicateKind::Equals)
             | ("InvertedIndex", PredicateKind::Contains)
-            | ("NgramIndex", PredicateKind::Fuzzy)
+            | ("NgramIndex", PredicateKind::Fuzzy | PredicateKind::Substring)
+            | ("SpatialIndex", PredicateKind::Within | PredicateKind::Near)
     )
 }
 

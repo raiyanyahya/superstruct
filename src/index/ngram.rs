@@ -15,6 +15,22 @@ fn trigrams(value: &str) -> HashSet<String> {
         .collect()
 }
 
+// Unpadded trigrams of a substring query. The padded version above adds
+// boundary spaces so fuzzy match can tell "cats" and "scats" apart, but for
+// substring search those boundary trigrams falsely require the query to
+// appear at a word edge. Substring filtering wants only the trigrams that
+// must literally appear inside the record.
+fn unpadded_trigrams(value: &str) -> HashSet<String> {
+    let lowered = value.to_lowercase();
+    let chars: Vec<char> = lowered.chars().collect();
+    if chars.len() < 3 {
+        return HashSet::new();
+    }
+    (0..chars.len() - 2)
+        .map(|i| chars[i..i + 3].iter().collect())
+        .collect()
+}
+
 // Trigram inverted index. Stores the lowercased value once per record so the
 // per-candidate Jaccard pass can recompute trigrams cheaply at query time.
 // Postings are roaring bitmaps so the union over target trigrams to gather
@@ -42,7 +58,7 @@ impl Index for NgramIndex {
     }
 
     fn supports_kind(&self, kind: PredicateKind) -> bool {
-        kind == PredicateKind::Fuzzy
+        matches!(kind, PredicateKind::Fuzzy | PredicateKind::Substring)
     }
 
     fn build_from_records(&mut self, records: &[Record]) {
@@ -84,11 +100,62 @@ impl Index for NgramIndex {
             Some(s) => s,
             None => return RoaringTreemap::new(),
         };
+        let target_lower = target.to_lowercase();
         let target_grams = trigrams(target);
         if target_grams.is_empty() {
             return RoaringTreemap::new();
         }
 
+        // Substring search uses the trigram postings as a candidate filter
+        // and then verifies with a literal contains() on the cached record
+        // value. Query trigrams are unpadded: padded trigrams would falsely
+        // require the query to sit at a word boundary in the record.
+        // Record postings are padded but they are a superset of unpadded
+        // record trigrams, so any unpadded query trigram that appears in the
+        // record will appear in the padded posting too.
+        //
+        // Queries shorter than three characters cannot produce trigrams at
+        // all, so we fall back to scanning every cached record value.
+        if predicate.kind == PredicateKind::Substring {
+            let query_grams = unpadded_trigrams(target);
+            if query_grams.is_empty() {
+                let mut out = RoaringTreemap::new();
+                for (rid, s) in self.record_value.iter() {
+                    if s.contains(&target_lower) {
+                        out.insert(*rid);
+                    }
+                }
+                return out;
+            }
+            let mut iter = query_grams.iter();
+            let first = match iter.next().and_then(|g| self.postings.get(g)) {
+                Some(b) => b.clone(),
+                None => return RoaringTreemap::new(),
+            };
+            let mut candidates = first;
+            for g in iter {
+                match self.postings.get(g) {
+                    Some(b) => candidates &= b,
+                    None => return RoaringTreemap::new(),
+                }
+                if candidates.is_empty() {
+                    return RoaringTreemap::new();
+                }
+            }
+            let mut out = RoaringTreemap::new();
+            for rid in candidates.iter() {
+                if let Some(s) = self.record_value.get(&rid) {
+                    if s.contains(&target_lower) {
+                        out.insert(rid);
+                    }
+                }
+            }
+            return out;
+        }
+
+        // Fuzzy match. Union the trigram postings to gather every record that
+        // shares at least one trigram with the query, then score each by
+        // Jaccard similarity and keep those above the threshold.
         let mut candidates = RoaringTreemap::new();
         for g in &target_grams {
             if let Some(ids) = self.postings.get(g) {

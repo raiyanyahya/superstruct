@@ -132,6 +132,20 @@ impl Superstruct {
         self.graph.write().unwrap().add_edge(a, b, label, directed);
     }
 
+    pub fn add_weighted_edge(
+        &self,
+        a: u64,
+        b: u64,
+        weight: f64,
+        label: Option<String>,
+        directed: bool,
+    ) {
+        self.graph
+            .write()
+            .unwrap()
+            .add_weighted_edge(a, b, weight, label, directed);
+    }
+
     pub fn remove_edge(&self, a: u64, b: u64, label: Option<String>, directed: bool) {
         self.graph.write().unwrap().remove_edge(a, b, label, directed);
     }
@@ -146,6 +160,32 @@ impl Superstruct {
 
     pub fn shortest_path(&self, source: u64, target: u64, label: Option<String>) -> Option<Vec<u64>> {
         self.graph.read().unwrap().shortest_path(source, target, &label)
+    }
+
+    // Single-source shortest weighted distance to every reachable node.
+    pub fn dijkstra(&self, source: u64, label: Option<String>) -> HashMap<u64, f64> {
+        self.graph.read().unwrap().dijkstra(source, &label)
+    }
+
+    // Shortest weighted path between two nodes. Returns the node sequence and
+    // the total distance, or None if target is unreachable.
+    pub fn shortest_path_weighted(
+        &self,
+        source: u64,
+        target: u64,
+        label: Option<String>,
+    ) -> Option<(Vec<u64>, f64)> {
+        self.graph
+            .read()
+            .unwrap()
+            .shortest_path_weighted(source, target, &label)
+    }
+
+    // PageRank over all nodes that appear in the graph. damping is typically
+    // 0.85 and iterations 20 to 50 for the power method to converge for
+    // most graph shapes.
+    pub fn pagerank(&self, damping: f64, iterations: usize) -> HashMap<u64, f64> {
+        self.graph.read().unwrap().pagerank(damping, iterations)
     }
 
     pub fn set_memory_budget(&self, bytes_limit: usize) {
@@ -173,9 +213,14 @@ impl Superstruct {
             .map(|r| SerializableRecord { id: r.id, attrs: r.attrs.clone() })
             .collect();
         let edges: Vec<SerializableEdge> = graph
-            .edges()
+            .weighted_edges()
             .into_iter()
-            .map(|(from, to, label)| SerializableEdge { from, to, label })
+            .map(|(from, to, label, weight)| SerializableEdge {
+                from,
+                to,
+                label,
+                weight,
+            })
             .collect();
         let payload = PersistencePayload {
             version: 1,
@@ -209,7 +254,13 @@ impl Superstruct {
         {
             let mut graph = ss.graph.write().unwrap();
             for edge in &payload.edges {
-                graph.add_edge(edge.from, edge.to, edge.label.clone(), true);
+                graph.add_weighted_edge(
+                    edge.from,
+                    edge.to,
+                    edge.weight,
+                    edge.label.clone(),
+                    true,
+                );
             }
         }
 
@@ -238,6 +289,14 @@ struct SerializableEdge {
     from: u64,
     to: u64,
     label: Option<String>,
+    // Default to 1.0 so snapshots written by older code (without a weight
+    // field) deserialize as unweighted edges.
+    #[serde(default = "default_edge_weight")]
+    weight: f64,
+}
+
+fn default_edge_weight() -> f64 {
+    1.0
 }
 
 pub struct QueryBuilder<'a> {
@@ -285,6 +344,48 @@ impl<'a> QueryBuilder<'a> {
         self.and_children.push(Node::Predicate(
             Predicate::new(PredicateKind::Fuzzy, attribute.to_string(), Value::from(value))
                 .with_threshold(threshold),
+        ));
+        self
+    }
+
+    pub fn substring(mut self, attribute: &str, value: &str) -> Self {
+        self.and_children.push(Node::Predicate(Predicate::new(
+            PredicateKind::Substring,
+            attribute.to_string(),
+            Value::from(value),
+        )));
+        self
+    }
+
+    pub fn within_box(
+        mut self,
+        attribute: &str,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+    ) -> Self {
+        self.and_children.push(Node::Predicate(Predicate::new(
+            PredicateKind::Within,
+            attribute.to_string(),
+            Value::List(vec![
+                Value::Float(min_x),
+                Value::Float(min_y),
+                Value::Float(max_x),
+                Value::Float(max_y),
+            ]),
+        )));
+        self
+    }
+
+    pub fn near(mut self, attribute: &str, x: f64, y: f64, radius: f64) -> Self {
+        self.and_children.push(Node::Predicate(
+            Predicate::new(
+                PredicateKind::Near,
+                attribute.to_string(),
+                Value::List(vec![Value::Float(x), Value::Float(y)]),
+            )
+            .with_threshold(radius),
         ));
         self
     }

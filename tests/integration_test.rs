@@ -1166,4 +1166,246 @@ mod tests {
             .with_threshold(1.0);
         assert_eq!(idx.execute(&pred), [0u64, 2].into_iter().collect());
     }
+
+    // ===== Spatial Index Tests =====
+
+    fn point(x: f64, y: f64) -> Value {
+        Value::List(vec![Value::Float(x), Value::Float(y)])
+    }
+
+    fn insert_at(ss: &Superstruct, x: f64, y: f64) -> u64 {
+        ss.insert(HashMap::from([("loc".to_string(), point(x, y))]))
+    }
+
+    #[test]
+    fn test_within_box_basic() {
+        let ss = Superstruct::new(None);
+        let _a = insert_at(&ss, 0.0, 0.0);
+        let _b = insert_at(&ss, 1.0, 1.0);
+        let _c = insert_at(&ss, 5.0, 5.0);
+        let _d = insert_at(&ss, 10.0, 10.0);
+
+        let hits = ss.find().within_box("loc", 0.5, 0.5, 5.5, 5.5).execute();
+        assert_eq!(hits.len(), 2); // b and c
+    }
+
+    #[test]
+    fn test_within_box_empty_when_disjoint() {
+        let ss = Superstruct::new(None);
+        insert_at(&ss, 0.0, 0.0);
+        insert_at(&ss, 1.0, 1.0);
+        let hits = ss.find().within_box("loc", 100.0, 100.0, 200.0, 200.0).execute();
+        assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn test_near_radius_basic() {
+        let ss = Superstruct::new(None);
+        let _a = insert_at(&ss, 0.0, 0.0);
+        let _b = insert_at(&ss, 3.0, 4.0);  // distance 5 from origin
+        let _c = insert_at(&ss, 6.0, 8.0);  // distance 10 from origin
+        let _d = insert_at(&ss, 100.0, 100.0);
+
+        let close = ss.find().near("loc", 0.0, 0.0, 6.0).execute();
+        assert_eq!(close.len(), 2); // a and b
+
+        let medium = ss.find().near("loc", 0.0, 0.0, 11.0).execute();
+        assert_eq!(medium.len(), 3); // a, b, c
+    }
+
+    #[test]
+    fn test_near_excludes_outside_radius() {
+        let ss = Superstruct::new(None);
+        insert_at(&ss, 0.0, 0.0);
+        insert_at(&ss, 10.0, 0.0);
+        let close = ss.find().near("loc", 0.0, 0.0, 5.0).execute();
+        assert_eq!(close.len(), 1);
+    }
+
+    #[test]
+    fn test_spatial_index_skips_records_without_attribute() {
+        let ss = Superstruct::new(None);
+        insert_at(&ss, 1.0, 1.0);
+        ss.insert(HashMap::from([("name".to_string(), Value::String("no point".to_string()))]));
+        let hits = ss.find().within_box("loc", 0.0, 0.0, 5.0, 5.0).execute();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn test_spatial_combines_with_other_indexes() {
+        let ss = Superstruct::new(None);
+        ss.insert(HashMap::from([
+            ("loc".to_string(), point(1.0, 1.0)),
+            ("city".to_string(), Value::String("NYC".to_string())),
+        ]));
+        ss.insert(HashMap::from([
+            ("loc".to_string(), point(2.0, 2.0)),
+            ("city".to_string(), Value::String("SF".to_string())),
+        ]));
+        let hits = ss.find()
+            .within_box("loc", 0.0, 0.0, 5.0, 5.0)
+            .equals("city", Value::String("NYC".to_string()))
+            .execute();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn test_spatial_propagates_inserts_after_build() {
+        let ss = Superstruct::new(None);
+        insert_at(&ss, 0.0, 0.0);
+        // Trigger SpatialIndex build with a query.
+        ss.find().within_box("loc", -1.0, -1.0, 1.0, 1.0).execute();
+        // Insert another point and re-query. Should now find both.
+        insert_at(&ss, 0.5, 0.5);
+        let hits = ss.find().within_box("loc", -1.0, -1.0, 1.0, 1.0).execute();
+        assert_eq!(hits.len(), 2);
+    }
+
+    // ===== Substring Tests =====
+
+    #[test]
+    fn test_substring_basic() {
+        let ss = Superstruct::new(None);
+        ss.insert(HashMap::from([("bio".to_string(), Value::String("loves cats".to_string()))]));
+        ss.insert(HashMap::from([("bio".to_string(), Value::String("scattered notes".to_string()))]));
+        ss.insert(HashMap::from([("bio".to_string(), Value::String("dog person".to_string()))]));
+        // Substring "cat" should match the first two but not the third.
+        let hits = ss.find().substring("bio", "cat").execute();
+        assert_eq!(hits.len(), 2);
+    }
+
+    #[test]
+    fn test_substring_finds_inside_word() {
+        let ss = Superstruct::new(None);
+        ss.insert(HashMap::from([("bio".to_string(), Value::String("concatenation".to_string()))]));
+        ss.insert(HashMap::from([("bio".to_string(), Value::String("dog".to_string()))]));
+        let hits = ss.find().substring("bio", "cat").execute();
+        // Inverted index would miss "concatenation" because token boundary
+        // is missing. Substring search finds it.
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn test_substring_case_insensitive() {
+        let ss = Superstruct::new(None);
+        ss.insert(HashMap::from([("bio".to_string(), Value::String("CAT photos".to_string()))]));
+        ss.insert(HashMap::from([("bio".to_string(), Value::String("dog".to_string()))]));
+        let hits = ss.find().substring("bio", "cat").execute();
+        assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn test_substring_empty_when_no_match() {
+        let ss = Superstruct::new(None);
+        ss.insert(HashMap::from([("bio".to_string(), Value::String("hello world".to_string()))]));
+        let hits = ss.find().substring("bio", "xyz").execute();
+        assert!(hits.is_empty());
+    }
+
+    // ===== Weighted Graph Tests =====
+
+    #[test]
+    fn test_dijkstra_simple_chain() {
+        let ss = Superstruct::new(None);
+        let a = ss.insert(HashMap::from([("n".to_string(), Value::Int(0))]));
+        let b = ss.insert(HashMap::from([("n".to_string(), Value::Int(1))]));
+        let c = ss.insert(HashMap::from([("n".to_string(), Value::Int(2))]));
+
+        ss.add_weighted_edge(a, b, 1.5, None, true);
+        ss.add_weighted_edge(b, c, 2.5, None, true);
+
+        let dist = ss.dijkstra(a, None);
+        assert_eq!(dist.get(&a), Some(&0.0));
+        assert_eq!(dist.get(&b), Some(&1.5));
+        assert_eq!(dist.get(&c), Some(&4.0));
+    }
+
+    #[test]
+    fn test_dijkstra_picks_shortest_via_alternative() {
+        let ss = Superstruct::new(None);
+        let a = ss.insert(HashMap::from([("n".to_string(), Value::Int(0))]));
+        let b = ss.insert(HashMap::from([("n".to_string(), Value::Int(1))]));
+        let c = ss.insert(HashMap::from([("n".to_string(), Value::Int(2))]));
+        let d = ss.insert(HashMap::from([("n".to_string(), Value::Int(3))]));
+
+        // Direct A->D weight 10, but A->B->C->D weight 1+1+1 = 3.
+        ss.add_weighted_edge(a, d, 10.0, None, true);
+        ss.add_weighted_edge(a, b, 1.0, None, true);
+        ss.add_weighted_edge(b, c, 1.0, None, true);
+        ss.add_weighted_edge(c, d, 1.0, None, true);
+
+        let path = ss.shortest_path_weighted(a, d, None);
+        assert!(path.is_some());
+        let (nodes, total) = path.unwrap();
+        assert_eq!(nodes, vec![a, b, c, d]);
+        assert_eq!(total, 3.0);
+    }
+
+    #[test]
+    fn test_shortest_weighted_path_unreachable() {
+        let ss = Superstruct::new(None);
+        let a = ss.insert(HashMap::from([("n".to_string(), Value::Int(0))]));
+        let b = ss.insert(HashMap::from([("n".to_string(), Value::Int(1))]));
+        // No edges. b is unreachable from a.
+        assert!(ss.shortest_path_weighted(a, b, None).is_none());
+    }
+
+    #[test]
+    fn test_dijkstra_same_source_target_zero() {
+        let ss = Superstruct::new(None);
+        let a = ss.insert(HashMap::from([("n".to_string(), Value::Int(0))]));
+        let path = ss.shortest_path_weighted(a, a, None);
+        assert_eq!(path, Some((vec![a], 0.0)));
+    }
+
+    #[test]
+    fn test_pagerank_uniform_chain() {
+        let ss = Superstruct::new(None);
+        let a = ss.insert(HashMap::from([("n".to_string(), Value::Int(0))]));
+        let b = ss.insert(HashMap::from([("n".to_string(), Value::Int(1))]));
+        let c = ss.insert(HashMap::from([("n".to_string(), Value::Int(2))]));
+        ss.add_weighted_edge(a, b, 1.0, None, false);
+        ss.add_weighted_edge(b, c, 1.0, None, false);
+
+        let pr = ss.pagerank(0.85, 30);
+        // All ranks should be valid probabilities and sum near 1.
+        let sum: f64 = pr.values().sum();
+        assert!((sum - 1.0).abs() < 0.01, "ranks should sum near 1, got {}", sum);
+        // Middle node b has two undirected neighbors, so it should rank
+        // strictly higher than the leaves a and c.
+        let ra = pr.get(&a).copied().unwrap();
+        let rb = pr.get(&b).copied().unwrap();
+        let rc = pr.get(&c).copied().unwrap();
+        assert!(rb > ra && rb > rc, "expected b to be the highest, got {:?}", pr);
+    }
+
+    #[test]
+    fn test_pagerank_isolated_nodes_get_some_mass() {
+        let ss = Superstruct::new(None);
+        let a = ss.insert(HashMap::from([("n".to_string(), Value::Int(0))]));
+        let b = ss.insert(HashMap::from([("n".to_string(), Value::Int(1))]));
+        let c = ss.insert(HashMap::from([("n".to_string(), Value::Int(2))]));
+        // Only a -> b edge. c is dangling. PageRank should still give c some
+        // mass via the teleport plus dangling redistribution.
+        ss.add_weighted_edge(a, b, 1.0, None, true);
+        ss.add_weighted_edge(c, a, 1.0, None, true); // c connected to a
+        let pr = ss.pagerank(0.85, 30);
+        assert!(pr.contains_key(&a));
+        assert!(pr.contains_key(&b));
+        assert!(pr.contains_key(&c));
+    }
+
+    #[test]
+    fn test_unweighted_add_edge_uses_weight_one() {
+        // The legacy add_edge entry point should give a weight of exactly
+        // 1.0 so dijkstra over a graph built that way matches the BFS depth.
+        let ss = Superstruct::new(None);
+        let a = ss.insert(HashMap::from([("n".to_string(), Value::Int(0))]));
+        let b = ss.insert(HashMap::from([("n".to_string(), Value::Int(1))]));
+        let c = ss.insert(HashMap::from([("n".to_string(), Value::Int(2))]));
+        ss.add_edge(a, b, None, true);
+        ss.add_edge(b, c, None, true);
+        let dist = ss.dijkstra(a, None);
+        assert_eq!(dist.get(&c), Some(&2.0));
+    }
 }
