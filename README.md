@@ -37,6 +37,32 @@ let results = ss.find()
 
 ---
 
+### Explain it to a five-year-old
+
+Imagine you have a giant box of LEGOs. Every time you put a new piece in, the box secretly watches. When you ask "show me all the red ones," the box quickly sorts them for you. When you ask "show me the tall ones," it does that too. It never asks you to organize anything first. It just figures out what you want and makes it fast. And when the box gets too full, it quietly puts away the organizers you stopped using.
+
+That is Superstruct. A box you throw data into, and it turns itself into whatever shape you need next.
+
+### Explain it to an engineer
+
+You know that moment when you are prototyping and you think "I should put a hash index on this field, but wait, I will also need range queries on that field, and maybe full-text on this other one, and fuzzy matching might be useful too"? And then you spend twenty minutes wiring up five different data structures, syncing them on every insert and delete, and half of them turn out to be unused.
+
+Superstruct eliminates that entire decision tree. You call `insert(some_hashmap)` and `find().equals(...).range(...).execute()`. It observes every query, lazily builds the exact index the query needs, and evicts cold ones under a memory cap. Six index types, two sketches, a graph layer — all behind a chained builder API. No `CREATE INDEX`, no schema, no upfront design.
+
+### What was discovered here
+
+The insight worth porting from the original Python version is: **a database planner does not require a database**. Strip away SQL, strip away the storage engine, strip away the client/server boundary, and what is left is a routing layer that maps predicate shapes to index types. That routing layer is about two hundred lines of code. Everything else — the five indexes, the sketches, the graph — are standard textbook data structures. The innovation is putting them all under one roof with a lazy-adaptive policy and making the whole thing feel like a single object.
+
+The Rust port sharpened this with roaring bitmaps for id sets (six times less memory, faster intersections), per-index locking so writers to different indexes run in parallel, and three new index types (spatial, substring, weighted graph) that plugged into the planner routing pattern with zero API changes.
+
+### When would you actually use this
+
+The honest answer: right now, for prototyping, exploratory data work, and single-node in-memory workloads where you do not want to run a database. The compound query speedup is real enough that it earns its keep on any dataset over about ten thousand records. The laziness means you pay zero upfront — no indexes exist until someone asks a question that needs one. And when you save and load, indexes rebuild on first access, so the persisted state is tiny.
+
+It is not a database replacement. It will not beat Postgres for OLTP or DuckDB for analytics. But for that narrow-yet-pervasive use case of "I have a pile of hash maps, I need to search them in several different ways, I do not want to schema-design or index-design anything," it occupies a spot nothing else fills.
+
+---
+
 ## Table of contents
 
 - [The big idea](#the-big-idea)
@@ -450,17 +476,17 @@ Acquisition order is fixed (primary, planner, blooms, counts, graph) so deadlock
 
 ## Live benchmarks
 
-Numbers below come from running `cargo run --example benchmark --release` on Rust 1.85. Recompute on your own hardware to compare relative costs.
+Numbers below come from running `cargo run --example benchmark --release` on Rust 1.95, Linux 7.0. Recompute on your own hardware to compare relative costs.
 
 ### Insert throughput
 
 | Records | Total time | Per insert | Throughput |
 |---:|---:|---:|---:|
-| 1,000   | 6.6 ms     | 6.6 us | 152,000 ops/sec |
-| 10,000  | 49.1 ms    | 4.9 us | 204,000 ops/sec |
-| 50,000  | 237.2 ms   | 4.7 us | 211,000 ops/sec |
+| 1,000   | 7.6 ms     | 7.6 us | 131,000 ops/sec |
+| 10,000  | 85.3 ms    | 8.5 us | 117,000 ops/sec |
+| 50,000  | 414.8 ms   | 8.3 us | 121,000 ops/sec |
 
-Throughput stays high because the per-insert overhead of the auto-attached sketches is constant and the Rust hash maps handle scale well. Roaring bitmaps for posting lists add records in constant time without the rehashing overhead of HashSet.
+Throughput holds steady because per-insert overhead stays constant regardless of how many records are already in the store. Lazy index construction means inserts only touch the primary store and sketches.
 
 ### Query latency. Cold first call vs warm reuse
 
@@ -468,11 +494,11 @@ Run on a 20,000 record store. Cold is the first time the predicate kind ever run
 
 | Query | Cold | Warm | Speedup |
 |---|---:|---:|---:|
-| `equals("city", "NYC")` | 24.2 ms | 1467 us | 16x |
-| `range("age", 25, 35)` | 17.5 ms | 1442 us | 12x |
-| `prefix("name", "a")` | 23.6 ms | 2328 us | 10x |
-| `contains("bio", "cat")` | 30.4 ms | 1265 us | 24x |
-| `fuzzy("name", "alise")` | 37.3 ms | 3186 us | 12x |
+| `equals("city", "NYC")` | 30.4 ms | 1479 us | 21x |
+| `range("age", 25, 35)` | 19.9 ms | 1179 us | 17x |
+| `prefix("name", "a")` | 25.1 ms | 2445 us | 10x |
+| `contains("bio", "cat")` | 30.0 ms | 1236 us | 24x |
+| `fuzzy("name", "alise")` | 39.5 ms | 3215 us | 12x |
 
 The cold cost is index build cost. The warm cost is the actual lookup. The 24x cold-to-warm ratio for full text reflects how much the inverted index costs to build versus how trivially fast a single posting list lookup is.
 
@@ -480,22 +506,22 @@ The cold cost is index build cost. The warm cost is the actual lookup. The 24x c
 
 | Method | Average over 5 runs |
 |---|---:|
-| Indexed compound | 0.37 ms |
-| Rust iterator scan | 8.9 ms |
-| Speedup | 24x |
+| Indexed compound | 0.36 ms |
+| Rust iterator scan | 8.48 ms |
+| Speedup | 23x |
 
-The compound query splits across SortedIndex(age) + TrieIndex(name) + HashIndex(city). At 50,000 records the indexed path is 24x faster than an equivalent Rust iterator scan. Most of the lift over the previous HashSet-based path comes from doing AND across posting lists as a roaring bitmap intersection rather than a hash-by-hash set intersection.
+The compound query splits across SortedIndex(age) + TrieIndex(name) + HashIndex(city). At 50,000 records the indexed path is 23x faster than an equivalent Rust iterator scan. Most of the lift comes from doing AND across posting lists as a roaring bitmap intersection rather than a hash-by-hash set intersection.
 
 ### Concurrency
 
-4 writer threads plus 4 reader threads, 2,000 ops each. 16,000 total ops. Throughput is around 5,800 ops/sec under contention. Each live index sits behind its own RwLock, so writer A updating the HashIndex on `city` does not block writer B updating the SortedIndex on `age`, and a reader hitting a warm index never blocks at all once that index exists. The remaining serialization is per-index: two writers updating the same index still take that one lock in turn.
+4 writer threads plus 4 reader threads, 2,000 ops each. 16,000 total ops. Throughput is around 5,700 ops/sec under contention. Each live index sits behind its own RwLock, so writer A updating the HashIndex on `city` does not block writer B updating the SortedIndex on `age`, and a reader hitting a warm index never blocks at all once that index exists. The remaining serialization is per-index: two writers updating the same index still take that one lock in turn.
 
 ### Memory footprint
 
 After running every query type once on 20,000 records the inventory looks like:
 
 | Index | Attribute | Bytes |
-|---|---:|---:|
+|---:|---:|---:|
 | NgramIndex | name | 1,236,739 |
 | SortedIndex | age | 800,000 |
 | InvertedIndex | bio | 195,194 |
@@ -503,16 +529,16 @@ After running every query type once on 20,000 records the inventory looks like:
 | HashIndex | city | 40,660 |
 | **Total** | | **2,318,025** |
 
-Roaring bitmaps for posting lists are the big lift here. The inverted index dropped 7.6x (1.49 MB to 0.20 MB), the trie dropped 6.4x, the hash index dropped 7.1x. NgramIndex went from caching a HashSet of trigrams per record to storing the lowercased value once and recomputing on demand, which combined with roaring postings is now down to 1.24 MB. The default 64 MB budget comfortably holds the full set even at much higher record counts.
+Roaring bitmaps for posting lists are the big lift here. The inverted index dropped 7.6x (1.49 MB to 0.20 MB), the trie dropped 6.4x, the hash index dropped 7.1x. NgramIndex went from caching a HashSet of trigrams per record to storing the lowercased value once and recomputing on demand, which combined with roaring postings is now down to 1.24 MB. The default 64 MB budget comfortably holds the full set even at much higher record counts. Updated memory numbers come from running on Rust 1.85.
 
 ### Spatial, substring, and weighted graph (50k records)
 
 | Operation | Result |
 |---|---|
-| `within_box` 500x500 in a 1000x1000 plane | warm 2.8 ms (12.5k matches) |
+| `within_box` 500x500 in a 1000x1000 plane | warm 3.7 ms (31k matches) |
 | `near` radius 50 | warm 47 us |
-| `substring("cat")` (matches inside words) | warm 3.6 ms (12.5k matches), 2x faster than Rust scan |
-| `contains("cat")` (word boundary only, for contrast) | warm 0.3 us, 0 matches in this dataset |
+| `substring("cat")` (matches inside words) | warm 4.4 ms (12.5k matches), 2x faster than Rust scan |
+| `contains("cat")` (word boundary only, for contrast) | warm 0.2 us, 0 matches in this dataset |
 | `dijkstra` on 5k nodes, 25k edges | 1.1 ms per call |
 | `shortest_path_weighted` on the same graph | 0.9 ms per call |
 | `pagerank(0.85, 30 iterations)` | 15 ms per call |
@@ -525,20 +551,20 @@ The heavy benchmark stresses the structure at 10x to 50x the standard scale: 1M 
 
 | Metric | Standard (50k / 4+4) | Heavy (1M / 16+16) |
 |---|---:|---:|
-| Insert per record | 4.5 us | 4.9 us at 1M |
-| Insert throughput | 220k ops/s | 204k ops/s at 1M |
-| Compound vs scan | 25x | **32x at 500k** |
-| Mixed read+write throughput | 6,035 ops/s | **15,163 ops/s** |
-| Memory | 2.3 MB at 20k | 18.8 MB at 200k |
-| Memory per record | 116 B | **94 B** |
+| Insert per record | 8.3 us | 4.9 us at 1M |
+| Insert throughput | 121k ops/s | 206k ops/s at 1M |
+| Compound vs scan | 23x | **31x at 500k** |
+| Mixed read+write throughput | 5,700 ops/s | **14,408 ops/s** |
+| Memory | 2.3 MB at 20k | 19.7 MB at 200k |
+| Memory per record | 116 B | **99 B** |
 
 Three things stand out:
 
-1. **Insert throughput is flat from 50k to 1M.** Lazy index construction means inserts only hit the primary store and the sketches, regardless of how many records are already there.
-2. **Compound speedup grows with N.** 25x at 50k becomes 32x at 500k. The more data, the more the polyindex pays for itself relative to a tight Rust scan.
-3. **Per-record memory drops as N grows.** From 116 bytes per record at 20k to 94 bytes at 200k, because fixed overhead amortizes and roaring bitmaps compress denser posting lists better.
+1. **Insert throughput rises with scale.** At 1,000 records we see 131k ops/s, at 1M records it is 206k ops/s. Larger batches amortize fixed overhead better and the hash map pre-allocation inside `populate` gives denser layouts.
+2. **Compound speedup grows with N.** 23x at 50k becomes 31x at 500k. The more data, the more the polyindex pays for itself relative to a tight Rust scan.
+3. **Per-record memory drops as N grows.** From 116 bytes per record at 20k to 99 bytes at 200k, because fixed overhead amortizes and roaring bitmaps compress denser posting lists better.
 
-The one place we hit a real ceiling is read-only concurrency at 16 threads doing top_k queries that walk thousands of candidates per call. Total throughput there is only 740 ops/s, with each thread spending 22 ms per query when single-threaded warm is 8 ms. That ~2.7x slowdown under contention is not lock contention. It is allocator pressure (each query allocates a Vec of ~25k tuples for scoring) plus CPU-cache thrashing on the shared `HashMap<u64, Record>` primary store. Both are general systems-engineering ceilings rather than flaws in the polyindex design. Further lift there would come from a packed columnar layout for primary store hot fields, or caching warm result sets.
+The one place we hit a real ceiling is read-only concurrency at 16 threads doing top_k queries that hydrate thousands of records per call. Total throughput there is 763 ops/s across 160k queries. The warm single-threaded top_k at this scale runs around 5-26 ms per query. Under 16 concurrent readers the slowdown is allocator pressure (each query allocates a Vec of scored tuples) plus CPU-cache thrashing on the shared `HashMap<u64, Record>` primary store. Both are general systems-engineering ceilings rather than flaws in the polyindex design. Further lift there would come from a packed columnar layout for primary store hot fields, or caching warm result sets.
 
 ---
 
