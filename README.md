@@ -1,5 +1,7 @@
 # Superstruct
 
+> A data structure with many data structures inside — hash, sorted, trie, inverted, ngram, spatial, bloom, count-min, graph.
+
 > The data structure that watches how you use it then quietly becomes the right one.
 
 > This project was built for fun, for learning and as a research sandbox. It is not a production system and does not try to be one. Everything here exists because it was interesting to build.
