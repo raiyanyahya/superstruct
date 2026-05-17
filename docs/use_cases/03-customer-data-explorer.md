@@ -4,7 +4,7 @@ Scenario. A support team searches a few million customer records by partial name
 
 ## Where it fits in the app
 
-On a support engineer's laptop, as a single binary with no external setup. The weekly data dump is a JSON file exported from the data warehouse. The tool loads it, builds whatever indexes the support team's queries actually need, and precomputes PageRank over the referral graph. The entire state lives in memory. The interface is two commands and a quit.
+On a support engineer laptop, as a single binary with no external setup. The weekly data dump is a JSON file exported from the data warehouse. The tool loads it, builds whatever indexes the support team queries actually need and precomputes PageRank over the referral graph. The entire state lives in memory. The interface is two commands and a quit.
 
 ```rust
 use superstruct::{Superstruct, Value};
@@ -67,4 +67,4 @@ fn main() {
 
 The standard answer here is to load the dump into SQLite and write SQL by hand, or build a small web dashboard with a filter form. Both take time to build and have a user interface learning curve.
 
-This tool is one binary compiled from one file, distributed by dropping it on the support engineer's machine. It has no setup step beyond pointing at the latest dump file. The fingerprint search uses trigram fuzzy matching, which SQLite cannot do without an extension. The PageRank over the referral graph answers a question about customer importance that the support team could not previously ask. The query language is two commands and a quit. It fits on a single screen.
+This tool is one binary compiled from one file, distributed by dropping it on the support engineer machine. It has no setup step beyond pointing at the latest dump file. The fingerprint search uses trigram fuzzy matching, which SQLite cannot do without an extension. The PageRank over the referral graph answers a question about customer importance that the support team could not previously ask. The query language is two commands and a quit. It fits on a single screen.

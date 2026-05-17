@@ -12,7 +12,7 @@ use std::time::Instant;
 type IndexKey = (String, String);
 // Each live index is wrapped in its own RwLock so writers serialize per index
 // while readers of other indexes proceed unblocked. The Arc lets us clone the
-// handle out of the planner's index map and drop the planner-level lock
+// handle out of the planner index map and drop the planner-level lock
 // before doing any actual index work.
 type IndexCell = Arc<RwLock<Box<dyn Index>>>;
 

@@ -97,7 +97,7 @@ impl Superstruct {
             }
         }
 
-        // Slow path. At least one predicate's index has to be built. Take the
+        // Slow path. At least one predicate index has to be built. Take the
         // planner write lock, build whatever the query needs, then drop the
         // write lock and run the query under read locks. Other threads only
         // serialize on the build window.

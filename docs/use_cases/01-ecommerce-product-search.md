@@ -63,6 +63,6 @@ async fn main() {
 
 ## Why this instead of the usual approach
 
-The standard alternative is a Vec of product structs filtered by iterator chains. Then someone adds a Redis sorted set for price ranges. Then someone adds a separate trie crate for brand prefixes. Then someone adds an inverted index library for descriptions. Now you have five data structures to keep in sync on every product insert, update, and delete. Half of them carry the same data in different shapes.
+The standard alternative is a Vec of product structs filtered by iterator chains. Then someone adds a Redis sorted set for price ranges. Then someone adds a separate trie crate for brand prefixes. Then someone adds an inverted index library for descriptions. Now you have five data structures to keep in sync on every product insert, update and delete. Half of them carry the same data in different shapes.
 
 Superstruct replaces all of them. The 200k products sit in about 20 MB of memory with roaring bitmap posting lists. Five filter types route to five indexes automatically on first query. The compound query `range + prefix + substring` runs in under a millisecond. No index was declared. No schema was written.

@@ -1,8 +1,8 @@
-# Superstruct Session Summary — 2026-05-07
+# Superstruct Session Summary, 2026-05-07
 
 ## What this project is
 
-Superstruct is an adaptive, in-memory, schema-less, poly-index data structure. You insert hash maps, you run chained queries, and the structure observes your workload — lazily building the right sub-index on first use and evicting cold ones when memory gets tight. You never declare an index.
+Superstruct is an adaptive, in-memory, schema-less, poly-index data structure. You insert hash maps, you run chained queries and the structure observes your workload, lazily building the right sub-index on first use and evicting cold ones when memory gets tight. You never declare an index.
 
 Originally a Python research project (~3,500 lines). Fully ported to Rust (~2,800 lines lib, 19 source files, 103 tests). Zero false negatives, zero runtime schema, zero boilerplate `CREATE INDEX`.
 
@@ -10,25 +10,25 @@ Originally a Python research project (~3,500 lines). Fully ported to Rust (~2,80
 
 ```
 Superstruct facade
-  ├── PrimaryStore      — canonical HashMap<u64, Record>, source of truth
-  ├── Planner           — lazy index construction, AST walker, memory budget eviction
-  ├── WorkloadTracker   — per-index hit counts + recency scores for eviction
-  ├── GraphStore        — adjacency, BFS, unweighted shortest path, Dijkstra, weighted shortest path, PageRank
+  ├── PrimaryStore      : canonical HashMap<u64, Record>, source of truth
+  ├── Planner           : lazy index construction, AST walker, memory budget eviction
+  ├── WorkloadTracker   : per-index hit counts + recency scores for eviction
+  ├── GraphStore        : adjacency, BFS, unweighted shortest path, Dijkstra, weighted shortest path, PageRank
   ├── Indexes (6)
-  │   ├── HashIndex     — equality O(1)
-  │   ├── SortedIndex   — range + equality, parallel sorted vecs, O(log n + k)
-  │   ├── TrieIndex     — prefix + equality, character trie, iterative DFS
-  │   ├── InvertedIndex — word-level full text, regex tokenizer, roaring postings
-  │   ├── NgramIndex    — fuzzy (Jaccard trigram) + substring (unpadded trigram intersect + verify)
-  │   └── SpatialIndex  — within_box, near (circle), parallel xs/ys/ids sorted by x
+  │   ├── HashIndex     : equality O(1)
+  │   ├── SortedIndex   : range + equality, parallel sorted vecs, O(log n + k)
+  │   ├── TrieIndex     : prefix + equality, character trie, iterative DFS
+  │   ├── InvertedIndex : word-level full text, regex tokenizer, roaring postings
+  │   ├── NgramIndex    : fuzzy (Jaccard trigram) + substring (unpadded trigram intersect + verify)
+  │   └── SpatialIndex  : within_box, near (circle), parallel xs/ys/ids sorted by x
   └── Sketches (2)
-      ├── BloomSketch   — MD5-based, 16384 bits, 5 hashes, no false negatives
-      └── CountMinSketch — 5x1024 table, always over-estimates
+      ├── BloomSketch   : MD5-based, 16384 bits, 5 hashes, no false negatives
+      └── CountMinSketch : 5x1024 table, always over-estimates
 ```
 
 All id sets use `roaring::RoaringTreemap` (compressed bitmaps). The graph stores weighted edges as `HashMap<u64, HashMap<(u64, Option<String>), f64>>`.
 
-Concurrency: each subsystem has its own `RwLock` (primary, planner, blooms, counts, graph). Per-index locking inside the planner — two writers touching different indexes run in parallel. WorkloadTracker uses atomic counters.
+Concurrency: each subsystem has its own `RwLock` (primary, planner, blooms, counts, graph). Per-index locking inside the planner: two writers touching different indexes run in parallel. WorkloadTracker uses atomic counters.
 
 ## Key files
 
@@ -38,7 +38,7 @@ Concurrency: each subsystem has its own `RwLock` (primary, planner, blooms, coun
 | src/planner.rs | Lazy build, AST decomposition, eviction (260 lines) |
 | src/graph.rs | BFS, shortest_path, Dijkstra, shortest_path_weighted, PageRank (340 lines) |
 | src/query.rs | AST: Predicate, And, Or, Not, TopK, Query (80 lines) |
-| src/value.rs | Value enum: Int, Float, String, List — Eq, Ord, Hash, Serialize, Deserialize |
+| src/value.rs | Value enum: Int, Float, String, List. Eq, Ord, Hash, Serialize, Deserialize |
 | src/index/ngram.rs | Fuzzy + substring over roaring postings (150 lines) |
 | src/index/spatial.rs | 2D bbox + radius, parallel sorted vecs (170 lines) |
 | src/index/sorted.rs | Range/equals via partition_point (95 lines) |
@@ -79,15 +79,15 @@ Head is at `d9d62de` with use case docs committed.
 
 ## What was added beyond the pure Python port
 
-1. **Roaring bitmaps** — Replaced HashSet<u64> with RoaringTreemap across all indexes. 5-7x memory reduction, faster intersection.
-2. **Substring search** — PredicateKind::Substring in NgramIndex. Unpadded trigram intersection + literal verify pass. Finds "cat" inside "concatenation" (contains() correctly does not).
-3. **SpatialIndex** — PredicateKind::Within + Near. Parallel sorted xs/ys/ids vectors. Binary search on x, linear y scan.
-4. **Weighted graph** — add_weighted_edge, Dijkstra, shortest_path_weighted, PageRank. OrderedF64 newtype for BinaryHeap. Backward compatible: add_edge() still works with weight 1.0.
-5. **Finer-grained locking** — Split from single RwLock to per-subsystem locks. Per-index locks in planner.
-6. **Heavy benchmark** — 1M records, 16+16 threads, top_k-only timing section.
-7. **Use case docs** — docs/use_cases/ with three integration patterns + README overview.
+1. **Roaring bitmaps**. Replaced HashSet<u64> with RoaringTreemap across all indexes. 5-7x memory reduction, faster intersection.
+2. **Substring search**. PredicateKind::Substring in NgramIndex. Unpadded trigram intersection + literal verify pass. Finds "cat" inside "concatenation" (contains() correctly does not).
+3. **SpatialIndex**. PredicateKind::Within + Near. Parallel sorted xs/ys/ids vectors. Binary search on x, linear y scan.
+4. **Weighted graph**. add_weighted_edge, Dijkstra, shortest_path_weighted, PageRank. OrderedF64 newtype for BinaryHeap. Backward compatible: add_edge() still works with weight 1.0.
+5. **Finer-grained locking**. Split from single RwLock to per-subsystem locks. Per-index locks in planner.
+6. **Heavy benchmark**. 1M records, 16+16 threads, top_k-only timing section.
+7. **Use case docs**. docs/use_cases/ with three integration patterns + README overview.
 
-## What's NOT done (future work, not yet started)
+## What is NOT done (future work, not yet started)
 
 - Packed columnar primary store layout (per-record HashMaps dominate memory at scale)
 - Incremental-only index building (first build is still O(n) full scan)

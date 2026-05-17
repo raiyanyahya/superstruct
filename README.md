@@ -2,9 +2,11 @@
 
 > The data structure that watches how you use it then quietly becomes the right one.
 
+> This project was built for fun, for learning and as a research sandbox. It is not a production system and does not try to be one. Everything here exists because it was interesting to build.
+
 Superstruct is an in-memory Rust data structure that holds your records in one place and answers your questions through a zoo of classical sub-structures it builds on demand. You insert hash maps. You ask questions. The structure observes your workload and decides which sub-structure to consult, builds it lazily the first time it is needed and evicts it when memory gets tight. **You never declare an index.**
 
-Hash map, sorted index, trie, inverted index, trigram fuzzy and substring index, 2D spatial index, bloom filter, count-min sketch and a weighted graph layer with shortest path, Dijkstra, and PageRank all sit inside one Rust struct. A small chained query DSL routes across them.
+Hash map, sorted index, trie, inverted index, trigram fuzzy and substring index, 2D spatial index, bloom filter, count-min sketch and a weighted graph layer with shortest path, Dijkstra and PageRank all sit inside one Rust struct. A small chained query DSL routes across them.
 
 ```rust
 use superstruct::*;
@@ -47,17 +49,17 @@ That is Superstruct. A box you throw data into, and it turns itself into whateve
 
 You know that moment when you are prototyping and you think "I should put a hash index on this field, but wait, I will also need range queries on that field, and maybe full-text on this other one, and fuzzy matching might be useful too"? And then you spend twenty minutes wiring up five different data structures, syncing them on every insert and delete, and half of them turn out to be unused.
 
-Superstruct eliminates that entire decision tree. You call `insert(some_hashmap)` and `find().equals(...).range(...).execute()`. It observes every query, lazily builds the exact index the query needs, and evicts cold ones under a memory cap. Six index types, two sketches, a graph layer — all behind a chained builder API. No `CREATE INDEX`, no schema, no upfront design.
+Superstruct eliminates that entire decision tree. You call `insert(some_hashmap)` and `find().equals(...).range(...).execute()`. It observes every query, lazily builds the exact index the query needs, and evicts cold ones under a memory cap. Six index types, two sketches, a graph layer, all behind a chained builder API. No `CREATE INDEX`, no schema, no upfront design.
 
 ### What was discovered here
 
-The insight worth porting from the original Python version is: **a database planner does not require a database**. Strip away SQL, strip away the storage engine, strip away the client/server boundary, and what is left is a routing layer that maps predicate shapes to index types. That routing layer is about two hundred lines of code. Everything else — the five indexes, the sketches, the graph — are standard textbook data structures. The innovation is putting them all under one roof with a lazy-adaptive policy and making the whole thing feel like a single object.
+The insight worth porting from the original Python version is: **a database planner does not require a database**. Strip away SQL, strip away the storage engine, strip away the client/server boundary, and what is left is a routing layer that maps predicate shapes to index types. That routing layer is about two hundred lines of code. Everything else (the five indexes, the sketches and the graph) are standard textbook data structures. The innovation is putting them all under one roof with a lazy-adaptive policy and making the whole thing feel like a single object.
 
-The Rust port sharpened this with roaring bitmaps for id sets (six times less memory, faster intersections), per-index locking so writers to different indexes run in parallel, and three new index types (spatial, substring, weighted graph) that plugged into the planner routing pattern with zero API changes.
+The Rust port sharpened this with roaring bitmaps for id sets (six times less memory, faster intersections), per-index locking so writers to different indexes run in parallel and three new index types (spatial, substring, weighted graph) that plugged into the planner routing pattern with zero API changes.
 
 ### When would you actually use this
 
-The honest answer: right now, for prototyping, exploratory data work, and single-node in-memory workloads where you do not want to run a database. The compound query speedup is real enough that it earns its keep on any dataset over about ten thousand records. The laziness means you pay zero upfront — no indexes exist until someone asks a question that needs one. And when you save and load, indexes rebuild on first access, so the persisted state is tiny.
+The honest answer: right now, for prototyping, exploratory data work and single-node in-memory workloads where you do not want to run a database. The compound query speedup is real enough that it earns its keep on any dataset over about ten thousand records. The laziness means you pay zero upfront. No indexes exist until someone asks a question that needs one. And when you save and load, indexes rebuild on first access, so the persisted state is tiny.
 
 It is not a database replacement. It will not beat Postgres for OLTP or DuckDB for analytics. But for that narrow-yet-pervasive use case of "I have a pile of hash maps, I need to search them in several different ways, I do not want to schema-design or index-design anything," it occupies a spot nothing else fills.
 
@@ -192,7 +194,7 @@ Same architecture, told as a small office.
 - **The Sketches** are two clerks at the front desk. One says "I am pretty sure I have not seen this before, do not bother going to the Vault." The other says "I have seen this name about 47 times this week."
 - **The Manager** is the planner. Hires a Specialist when a new kind of question shows up. Fires the laziest Specialist when the office gets crowded. Splits compound questions across multiple Specialists and combines their answers.
 - **HR** is the workload tracker. Keeps a tally of which Specialist gets used a lot and which one is just sitting around.
-- **The Cartographer of People** is the graph store. Knows who is friends with whom, with what weight, and can answer "shortest path", "PageRank", and "BFS depth from here". Independent of the Specialists.
+- **The Cartographer of People** is the graph store. Knows who is friends with whom, with what weight, and can answer "shortest path", "PageRank" and "BFS depth from here". Independent of the Specialists.
 
 The user only knocks on the front desk.
 
@@ -415,7 +417,7 @@ pub trait Index: Send + Sync {
 
 **HashIndex** uses `HashMap<Value, HashSet<u64>>`. Equality lookup is O(1). Insert and remove are O(1).
 
-**SortedIndex** uses two parallel `Vec`s, `values` sorted and `ids` in lockstep. Range queries use `partition_point` (Rust's `bisect`) to find the slice in O(log n) then read off the ids in O(k) where k is the result size. Bulk build sorts once in O(n log n). Incremental insert is O(n) due to vector shifting.
+**SortedIndex** uses two parallel `Vec`s, `values` sorted and `ids` in lockstep. Range queries use `partition_point` (the Rust `bisect`) to find the slice in O(log n) then read off the ids in O(k) where k is the result size. Bulk build sorts once in O(n log n). Incremental insert is O(n) due to vector shifting.
 
 **TrieIndex** is a classical character trie. Each node stores `children: HashMap<char, TrieNode>` and `ids: HashSet<u64>`. Prefix queries walk down to the prefix node in O(k) where k is the prefix length, then collect ids from the subtree by iterative DFS. Equality is the same walk without the DFS.
 
@@ -437,7 +439,7 @@ Phase 2 (score):     for each candidate, compute Jaccard similarity
 
 Auto attached per attribute as records are inserted. Tiny memory, never evicted.
 
-**BloomSketch** is a bit array of `m` bits and `k` hash functions. The default is 16384 bits and 5 hashes which sits at well under one percent false positive rate for tens of thousands of distinct values. Hash positions are derived from MD5 of the value's display representation so any value works. **No false negatives.** False positive rate slowly rises with occupancy.
+**BloomSketch** is a bit array of `m` bits and `k` hash functions. The default is 16384 bits and 5 hashes which sits at well under one percent false positive rate for tens of thousands of distinct values. Hash positions are derived from MD5 of the value display representation so any value works. **No false negatives.** False positive rate slowly rises with occupancy.
 
 **CountMinSketch** is a 2D table of `d` rows by `w` columns. Each `add(value)` increments `d` counters, one per row, at columns chosen by `d` independent hashes. `estimate(value)` returns the minimum across those `d` counters. The minimum is **always an over-estimate** of the true count, never an under-estimate, and is tight when collisions are sparse.
 
@@ -464,7 +466,7 @@ JSON only via serde. No indexes, no sketches. The load path replays records thro
 
 ### Concurrency model
 
-State is split across multiple locks rather than a single coarse one. The primary store, the planner index map, the bloom map, the count-min map, and the graph each sit behind their own outer `RwLock`. Reads of any of these pieces run in parallel across threads. The workload tracker uses atomic counters internally so hit recording is lock-free on the query fast path.
+State is split across multiple locks rather than a single coarse one. The primary store, the planner index map, the bloom map, the count-min map and the graph each sit behind their own outer `RwLock`. Reads of any of these pieces run in parallel across threads. The workload tracker uses atomic counters internally so hit recording is lock-free on the query fast path.
 
 The planner takes the design one step further: the index map is `HashMap<Key, Arc<RwLock<Box<dyn Index>>>>`. Each individual index has its own per-index `RwLock`. The planner-level `RwLock` is only taken in write mode when the map itself changes, namely when a new index is built or an evicted one is removed. Updating an existing index (an insert or delete propagating to a posting list) only takes a brief per-index write lock, so a writer touching the HashIndex on `city` does not block a writer touching the SortedIndex on `age`.
 
@@ -531,7 +533,7 @@ After running every query type once on 20,000 records the inventory looks like:
 
 Roaring bitmaps for posting lists are the big lift here. The inverted index dropped 7.6x (1.49 MB to 0.20 MB), the trie dropped 6.4x, the hash index dropped 7.1x. NgramIndex went from caching a HashSet of trigrams per record to storing the lowercased value once and recomputing on demand, which combined with roaring postings is now down to 1.24 MB. The default 64 MB budget comfortably holds the full set even at much higher record counts. Updated memory numbers come from running on Rust 1.85.
 
-### Spatial, substring, and weighted graph (50k records)
+### Spatial, substring and weighted graph (50k records)
 
 | Operation | Result |
 |---|---|
@@ -661,7 +663,7 @@ All chain off `ss.find()` and end with `.execute()`.
 - **JSON-friendly attribute values only.** If you `save` a record whose attribute contains an unserializable type, it will fail. The `Value` enum supports `Int`, `Float`, `String`, and `List` variants, all of which serialize cleanly.
 - **Bloom filters cannot delete.** False positive rate rises slowly with churn. Wipe and rebuild for a long-running process if precision matters.
 - **N-gram index doubles memory.** It stores per-record trigram sets so Jaccard can be computed without a primary store walk.
-- **Two writers updating the same index serialize on that index's per-index RwLock.** Writers touching different indexes run in parallel, but if every record carries the same attribute (e.g. every insert sets `city`), all writers contend on the HashIndex for that attribute. A lock-free posting list would lift this further; not yet implemented.
+- **Two writers updating the same index serialize on that index per-index RwLock.** Writers touching different indexes run in parallel, but if every record carries the same attribute (e.g. every insert sets `city`), all writers contend on the HashIndex for that attribute. A lock-free posting list would lift this further; not yet implemented.
 - **Compound speedup is dataset dependent.** Indexes shine when predicates are selective and base costs are nontrivial. On small in-memory datasets a Rust iterator scan is hard to beat.
 - **No SQL.** No JOIN. No window functions. The query language is intentionally tiny and conjunctive plus boolean composition.
 - **No type system on attributes.** Mixing ints and strings under the same attribute will work for some indexes and break for others (the sorted index will refuse to compare them).

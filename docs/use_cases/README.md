@@ -6,7 +6,7 @@ Three real-world integration patterns, with code and context. Each document cove
 
 2. [Game server spatial matchmaking](02-game-server-spatial-matchmaking.md) -- A multiplayer server matching 50k concurrent players by 2D proximity, skill band, and region. Superstruct runs in the game loop tick with no external database process.
 
-3. [Internal customer data explorer](03-customer-data-explorer.md) -- A CLI tool on a support engineer's laptop. Loads a weekly data dump, answers fuzzy name searches and compound filters, and precomputes PageRank on the referral graph in a REPL.
+3. [Internal customer data explorer](03-customer-data-explorer.md) -- A CLI tool on a support engineer laptop. Loads a weekly data dump, answers fuzzy name searches and compound filters and precomputes PageRank on the referral graph in a REPL.
 
 ## The common pattern
 

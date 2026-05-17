@@ -24,7 +24,7 @@ fn parse_point(v: &Value) -> Option<(f64, f64)> {
 // on x to bracket the candidates, then linear scan within the band to check
 // the y axis or the squared distance. Building from scratch is O(n log n).
 // Inserting one record after build is O(n) because of the Vec::insert shift,
-// which mirrors how SortedIndex behaves and matches the project's design.
+// which mirrors how SortedIndex behaves and matches the project design.
 //
 // Memory cost is roughly 24 bytes per record for the parallel vectors plus
 // the by_id lookup. At one million records that is around 50 MB, which is
@@ -35,7 +35,7 @@ pub struct SpatialIndex {
     xs: Vec<f64>,
     ys: Vec<f64>,
     ids: Vec<u64>,
-    // Reverse lookup so remove() can find a record's coordinates without
+    // Reverse lookup so remove() can find the record coordinates without
     // walking every entry.
     by_id: HashMap<u64, (f64, f64)>,
 }
