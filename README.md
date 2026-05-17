@@ -6,6 +6,11 @@
 
 > This project was built for fun, for learning and as a research sandbox. It is not a production system and does not try to be one. Everything here exists because it was interesting to build.
 
+[![Rust](https://img.shields.io/badge/Rust-1.70+-orange?style=flat&logo=rust)](https://www.rust-lang.org)
+[![Tests](https://img.shields.io/badge/tests-103%20passed-brightgreen?style=flat)]()
+[![Status](https://img.shields.io/badge/status-research-lightgrey?style=flat)]()
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat)]()
+
 Superstruct is an in-memory Rust data structure that holds your records in one place and answers your questions through a zoo of classical sub-structures it builds on demand. You insert hash maps. You ask questions. The structure observes your workload and decides which sub-structure to consult, builds it lazily the first time it is needed and evicts it when memory gets tight. **You never declare an index.**
 
 Hash map, sorted index, trie, inverted index, trigram fuzzy and substring index, 2D spatial index, bloom filter, count-min sketch and a weighted graph layer with shortest path, Dijkstra and PageRank all sit inside one Rust struct. A small chained query DSL routes across them.
