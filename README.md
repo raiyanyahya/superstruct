@@ -9,7 +9,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.70+-orange?style=flat&logo=rust)](https://www.rust-lang.org)
 [![Tests](https://img.shields.io/badge/tests-103%20passed-brightgreen?style=flat)]()
 [![Status](https://img.shields.io/badge/status-research-lightgrey?style=flat)]()
-[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue?style=flat)]()
+[![License](https://img.shields.io/badge/license-MIT-blue?style=flat)](LICENSE)
 
 Superstruct is an in-memory Rust data structure that holds your records in one place and answers your questions through a zoo of classical sub-structures it builds on demand. You insert hash maps. You ask questions. The structure observes your workload and decides which sub-structure to consult, builds it lazily the first time it is needed and evicts it when memory gets tight. **You never declare an index.**
 
@@ -758,7 +758,7 @@ If anything fails, please open an issue on whichever platform you are reading th
 
 ## License
 
-MIT or Apache-2.0. The spirit is "use it, learn from it, build something cooler with it".
+MIT. See [LICENSE](LICENSE) for the full text.
 
 ---
 

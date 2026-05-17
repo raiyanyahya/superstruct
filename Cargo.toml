@@ -3,6 +3,7 @@ name = "superstruct"
 version = "0.1.0"
 edition = "2021"
 description = "Adaptive in-memory poly-index data structure"
+license = "MIT"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
